@@ -14,15 +14,26 @@ const { seedParameters, seedAdmin, seedTeamMember, seedSampleData } = require('.
 
 const app = express();
 
+// Track if DB is initialized (for serverless)
+let isDbInitialized = false;
+
 // Connect to database and seed data
 const initializeDB = async () => {
-  await connectDB();
-  await seedParameters();
-  await seedAdmin();
-  await seedTeamMember();
-  await seedSampleData();
+  if (isDbInitialized) return;
+
+  try {
+    await connectDB();
+    await seedParameters();
+    await seedAdmin();
+    await seedTeamMember();
+    await seedSampleData();
+    isDbInitialized = true;
+  } catch (error) {
+    console.error('DB initialization error:', error.message);
+  }
 };
 
+// Initialize DB (non-blocking for serverless)
 initializeDB();
 
 // Security middleware
@@ -31,8 +42,25 @@ app.use(helmet({
 }));
 
 // CORS configuration - MUST be before rate limiter to handle preflight requests
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  process.env.CORS_ORIGIN,
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+
+    // Allow if origin matches allowed list or is a Vercel preview URL
+    if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+
+    callback(null, true); // Allow all for now (you can restrict later)
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -58,6 +86,22 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Static files for uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Ensure DB connection before API routes (for serverless)
+app.use('/api', async (req, res, next) => {
+  try {
+    if (!isDbInitialized) {
+      await initializeDB();
+    }
+    next();
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Database connection failed',
+      error: error.message
+    });
+  }
+});
+
 // API routes
 app.use('/api', routes);
 
@@ -80,8 +124,12 @@ app.use(errorHandler);
 
 const PORT = config.port;
 
-app.listen(PORT, () => {
-  console.log(`Server running in ${config.nodeEnv} mode on port ${PORT}`);
-});
+// Only start server if not running on Vercel (serverless)
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`Server running in ${config.nodeEnv} mode on port ${PORT}`);
+  });
+}
 
+// Export for Vercel serverless
 module.exports = app;
