@@ -23,6 +23,9 @@ router.use(protect, authorize('TEAM_MEMBER', 'ADMIN'));
 // Get FIELD parameters for form
 router.get('/parameters', mobileController.getFieldParameters);
 
+// Get my sample statistics (for dashboard)
+router.get('/stats', mobileController.getMobileStats);
+
 // Create sample (with optional field test values)
 // Single endpoint handles both create-only and create+test
 router.post(

@@ -97,13 +97,29 @@ const createSample = async (req, res, next) => {
     const now = new Date();
 
     // Create sample with FIELD test values (NO status calculation)
-    // Just store parameterRef + value
-    const sampleParameters = parsedParameters.map(p => ({
-      parameterRef: p.id,
-      value: p.value,
-      testLocation: 'FIELD',
-      status: null  // Status will be calculated after LAB test
-    }));
+    // Store full snapshot so View modal can display parameter info
+    const sampleParameters = parsedParameters.map(p => {
+      const paramMaster = paramDocs.find(doc => doc._id.toString() === p.id);
+      return {
+        parameterRef: p.id,
+        // SNAPSHOT data from ParameterMaster
+        code: paramMaster.code,
+        name: paramMaster.name,
+        unit: paramMaster.unit,
+        type: paramMaster.type,
+        testLocation: 'FIELD',
+        acceptableLimit: {
+          min: paramMaster.acceptableLimit?.min ?? null,
+          max: paramMaster.acceptableLimit?.max ?? null
+        },
+        permissibleLimit: {
+          min: paramMaster.permissibleLimit?.min ?? null,
+          max: paramMaster.permissibleLimit?.max ?? null
+        },
+        value: p.value,
+        status: null  // Status will be calculated after LAB test
+      };
+    });
 
     const sampleData = {
       title,
@@ -159,47 +175,130 @@ const createSample = async (req, res, next) => {
 };
 
 /**
- * Get samples for mobile user
+ * Get samples for mobile user (their own samples only)
  * GET /api/mobile/samples
- * Query params: page, limit, fieldTested, labTested
+ *
+ * Query params:
+ * - page: Page number (default: 1)
+ * - limit: Items per page (default: 10)
+ * - period: Time filter - 'today' | 'yesterday' | 'week' | 'month' | 'all' (default: 'all')
+ * - status: Status filter - 'pending' | 'lab_done' | 'published' | 'all' (default: 'all')
  */
 const getMobileSamples = async (req, res, next) => {
   try {
-    const { page = 1, limit = 10, fieldTested, labTested } = req.query;
+    const { page = 1, limit = 10, period = 'all', status = 'all' } = req.query;
 
-    const query = { isDeleted: false };
+    // Base query - only show user's own samples
+    const query = {
+      isDeleted: false,
+      collectedBy: req.user._id  // Only samples created by this user
+    };
 
-    // Filter by test status
-    if (fieldTested !== undefined) {
-      query['testInfo.fieldTested'] = fieldTested === 'true';
+    // Time period filter
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    switch (period) {
+      case 'today':
+        query.createdAt = { $gte: startOfToday };
+        break;
+      case 'yesterday':
+        const startOfYesterday = new Date(startOfToday);
+        startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+        query.createdAt = { $gte: startOfYesterday, $lt: startOfToday };
+        break;
+      case 'week':
+        const startOfWeek = new Date(startOfToday);
+        startOfWeek.setDate(startOfWeek.getDate() - 7);
+        query.createdAt = { $gte: startOfWeek };
+        break;
+      case 'month':
+        const startOfMonth = new Date(startOfToday);
+        startOfMonth.setDate(startOfMonth.getDate() - 30);
+        query.createdAt = { $gte: startOfMonth };
+        break;
+      // 'all' - no date filter
     }
-    if (labTested !== undefined) {
-      query['testInfo.labTested'] = labTested === 'true';
+
+    // Status filter
+    switch (status) {
+      case 'pending':
+        // Field tested but not lab tested
+        query['testInfo.fieldTested'] = true;
+        query['testInfo.labTested'] = false;
+        break;
+      case 'lab_done':
+        // Lab tested but not published
+        query['testInfo.labTested'] = true;
+        query['testInfo.published'] = false;
+        break;
+      case 'published':
+        query['testInfo.published'] = true;
+        break;
+      // 'all' - no status filter
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const [samples, total] = await Promise.all([
+    const [samples, total, stats] = await Promise.all([
       Sample.find(query)
-        .select('sampleId title images collectedAt testInfo overallStatus')
-        .populate('collectedBy', 'name')
+        .select('sampleId title address images collectedAt testInfo overallStatus createdAt')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
-      Sample.countDocuments(query)
+      Sample.countDocuments(query),
+      // Get counts for each period (for UI tabs)
+      getMySampleStats(req.user._id)
     ]);
 
-    res.json(
-      ApiResponse.paginated(samples, {
+    res.json({
+      success: true,
+      message: 'Samples retrieved successfully',
+      data: samples,
+      stats: stats,
+      pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / parseInt(limit)),
         totalItems: total,
         itemsPerPage: parseInt(limit)
-      }, 'Samples retrieved successfully')
-    );
+      }
+    });
   } catch (error) {
     next(error);
   }
+};
+
+/**
+ * Get sample statistics for current user
+ * Helper function for getMobileSamples
+ */
+const getMySampleStats = async (userId) => {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfYesterday = new Date(startOfToday);
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfWeek.getDate() - 7);
+  const startOfMonth = new Date(startOfToday);
+  startOfMonth.setDate(startOfMonth.getDate() - 30);
+
+  const baseQuery = { collectedBy: userId, isDeleted: false };
+
+  const [today, yesterday, week, month, total, pending, labDone, published] = await Promise.all([
+    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfToday } }),
+    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfYesterday, $lt: startOfToday } }),
+    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfWeek } }),
+    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfMonth } }),
+    Sample.countDocuments(baseQuery),
+    Sample.countDocuments({ ...baseQuery, 'testInfo.fieldTested': true, 'testInfo.labTested': false }),
+    Sample.countDocuments({ ...baseQuery, 'testInfo.labTested': true, 'testInfo.published': false }),
+    Sample.countDocuments({ ...baseQuery, 'testInfo.published': true })
+  ]);
+
+  return {
+    byPeriod: { today, yesterday, week, month, total },
+    byStatus: { pending, labDone, published }
+  };
 };
 
 /**
@@ -289,9 +388,26 @@ const getFieldParameters = async (req, res, next) => {
   }
 };
 
+/**
+ * Get my sample statistics (for mobile dashboard)
+ * GET /api/mobile/stats
+ *
+ * Returns counts by period and status for current user
+ */
+const getMobileStats = async (req, res, next) => {
+  try {
+    const stats = await getMySampleStats(req.user._id);
+
+    res.json(ApiResponse.success(stats, 'Statistics retrieved successfully'));
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createSample,
   getMobileSamples,
   getMobileSampleById,
-  getFieldParameters
+  getFieldParameters,
+  getMobileStats
 };

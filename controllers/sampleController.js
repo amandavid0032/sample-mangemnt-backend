@@ -2,17 +2,12 @@
  * Sample Controller
  * Handles admin API endpoints for sample management
  *
- * NEW WORKFLOW: FIELD + LAB Hybrid Testing
- * - ADMIN submits LAB test (FIELD_TESTED → LAB_TESTED)
- * - ADMIN publishes (LAB_TESTED → PUBLISHED)
- * - ADMIN archives (PUBLISHED → ARCHIVED)
- * - ADMIN restores (ARCHIVED → PUBLISHED)
- *
- * Lifecycle: COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
+ * NEW DESIGN:
+ * - Uses testInfo nested object for tracking test status
+ * - Status calculation happens ONLY after LAB test
  */
 
 const { Sample, AuditLog, ParameterMaster } = require('../models');
-const StatusEngine = require('../services/statusEngine');
 const ApiResponse = require('../utils/ApiResponse');
 
 /**
@@ -24,7 +19,9 @@ const getAllSamples = async (req, res, next) => {
     const {
       page = 1,
       limit = 10,
-      lifecycleStatus,
+      fieldTested,
+      labTested,
+      published,
       overallStatus,
       search,
       includeDeleted = 'false'
@@ -37,8 +34,15 @@ const getAllSamples = async (req, res, next) => {
       query.isDeleted = false;
     }
 
-    if (lifecycleStatus) {
-      query.lifecycleStatus = lifecycleStatus;
+    // Filter by testInfo flags
+    if (fieldTested !== undefined) {
+      query['testInfo.fieldTested'] = fieldTested === 'true';
+    }
+    if (labTested !== undefined) {
+      query['testInfo.labTested'] = labTested === 'true';
+    }
+    if (published !== undefined) {
+      query['testInfo.published'] = published === 'true';
     }
 
     if (overallStatus) {
@@ -48,7 +52,8 @@ const getAllSamples = async (req, res, next) => {
     if (search) {
       query.$or = [
         { address: { $regex: search, $options: 'i' } },
-        { sampleId: { $regex: search, $options: 'i' } }
+        { sampleId: { $regex: search, $options: 'i' } },
+        { title: { $regex: search, $options: 'i' } }
       ];
     }
 
@@ -57,9 +62,7 @@ const getAllSamples = async (req, res, next) => {
     const [samples, total] = await Promise.all([
       Sample.find(query)
         .populate('collectedBy', 'name email')
-        .populate('fieldTestedBy', 'name email')
-        .populate('labTestedBy', 'name email')
-        .populate('publishedBy', 'name email')
+        .populate('testInfo.labTestedBy', 'name email')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
@@ -87,9 +90,7 @@ const getSampleById = async (req, res, next) => {
   try {
     const sample = await Sample.findById(req.params.id)
       .populate('collectedBy', 'name email')
-      .populate('fieldTestedBy', 'name email')
-      .populate('labTestedBy', 'name email')
-      .populate('publishedBy', 'name email');
+      .populate('testInfo.labTestedBy', 'name email');
 
     if (!sample) {
       return res.status(404).json(
@@ -104,14 +105,12 @@ const getSampleById = async (req, res, next) => {
 };
 
 /**
- * Submit LAB test - FIELD_TESTED → LAB_TESTED
+ * Submit LAB test
  * POST /api/samples/:id/lab-test
  *
- * SECURITY:
- * - Only ADMIN can submit lab test
- * - Only LAB parameters allowed
- * - Sample must be in FIELD_TESTED status
- * - Calculates overall status after merging with FIELD results
+ * - Only samples with fieldTested=true, labTested=false can have LAB test
+ * - Calculates status for ALL parameters (FIELD + LAB)
+ * - Sets overallStatus
  */
 const submitLabTest = async (req, res, next) => {
   try {
@@ -130,29 +129,132 @@ const submitLabTest = async (req, res, next) => {
       );
     }
 
-    // SECURITY: Only FIELD_TESTED samples can have lab test submitted
-    if (sample.lifecycleStatus !== 'FIELD_TESTED') {
+    // Must be field tested but not lab tested
+    if (!sample.testInfo.fieldTested) {
       return res.status(400).json(
-        ApiResponse.error(`Sample must be in FIELD_TESTED status. Current status: ${sample.lifecycleStatus}`, 400)
+        ApiResponse.error('Sample must have FIELD test completed first', 400)
       );
     }
 
-    // Get existing FIELD parameters from sample
-    const existingFieldParams = sample.getFieldParameters();
+    if (sample.testInfo.labTested) {
+      return res.status(400).json(
+        ApiResponse.error('LAB test already submitted for this sample', 400)
+      );
+    }
 
-    // Process LAB test using StatusEngine
-    // This validates only LAB parameters are submitted and all are present
-    // Also merges with FIELD parameters and calculates overall status
-    const labResult = await StatusEngine.processLabTest(parameters, existingFieldParams);
+    // Validate LAB parameters
+    if (!parameters || parameters.length === 0) {
+      return res.status(400).json(
+        ApiResponse.error('LAB parameters are required', 400)
+      );
+    }
+
+    // Get LAB parameter definitions
+    const labParamIds = parameters.map(p => p.parameterRef);
+    const labParamDocs = await ParameterMaster.find({
+      _id: { $in: labParamIds },
+      testLocation: 'LAB',
+      isActive: true
+    });
+
+    if (labParamDocs.length !== labParamIds.length) {
+      const validIds = labParamDocs.map(p => p._id.toString());
+      const invalidIds = labParamIds.filter(id => !validIds.includes(id));
+      return res.status(400).json(
+        ApiResponse.error(`Invalid LAB parameter IDs: ${invalidIds.join(', ')}`, 400)
+      );
+    }
 
     const now = new Date();
 
-    // Update sample with LAB test results (includes FIELD + LAB params)
-    sample.parameters = labResult.parameters;
-    sample.overallStatus = labResult.overallStatus;
-    sample.lifecycleStatus = 'LAB_TESTED';
-    sample.labTestedBy = req.user._id;
-    sample.labTestedAt = now;
+    // Get existing FIELD parameters
+    const fieldParams = sample.parameters;
+
+    // Process LAB parameters - create snapshots with status
+    const labParamsWithStatus = [];
+    for (const input of parameters) {
+      const paramMaster = labParamDocs.find(p => p._id.toString() === input.parameterRef);
+
+      // Calculate status
+      const status = paramMaster.calculateStatus(input.value);
+
+      labParamsWithStatus.push({
+        parameterRef: paramMaster._id,
+        code: paramMaster.code,
+        name: paramMaster.name,
+        unit: paramMaster.unit,
+        type: paramMaster.type,
+        testLocation: 'LAB',
+        acceptableLimit: {
+          min: paramMaster.acceptableLimit?.min ?? null,
+          max: paramMaster.acceptableLimit?.max ?? null
+        },
+        permissibleLimit: {
+          min: paramMaster.permissibleLimit?.min ?? null,
+          max: paramMaster.permissibleLimit?.max ?? null
+        },
+        value: input.value,
+        status: status
+      });
+    }
+
+    // Also calculate status for FIELD parameters now
+    const fieldParamIds = fieldParams.map(p => p.parameterRef.toString());
+    const fieldParamDocs = await ParameterMaster.find({
+      _id: { $in: fieldParamIds },
+      isActive: true
+    });
+
+    const fieldParamsWithStatus = fieldParams.map(fp => {
+      const paramMaster = fieldParamDocs.find(p => p._id.toString() === fp.parameterRef.toString());
+      if (paramMaster) {
+        // Use try-catch because old samples might have invalid values
+        let status = null;
+        try {
+          status = paramMaster.calculateStatus(fp.value);
+        } catch (err) {
+          // If status calculation fails (e.g., invalid ENUM value), use existing status or ACCEPTABLE
+          status = fp.status || 'ACCEPTABLE';
+          console.warn(`Status calculation failed for ${paramMaster.code}: ${err.message}`);
+        }
+
+        return {
+          ...fp.toObject(),
+          code: paramMaster.code,
+          name: paramMaster.name,
+          unit: paramMaster.unit,
+          type: paramMaster.type,
+          acceptableLimit: {
+            min: paramMaster.acceptableLimit?.min ?? null,
+            max: paramMaster.acceptableLimit?.max ?? null
+          },
+          permissibleLimit: {
+            min: paramMaster.permissibleLimit?.min ?? null,
+            max: paramMaster.permissibleLimit?.max ?? null
+          },
+          status: status
+        };
+      }
+      // If no paramMaster found, keep existing data with existing status or null
+      const fpObj = typeof fp.toObject === 'function' ? fp.toObject() : fp;
+      return {
+        ...fpObj,
+        status: fpObj.status || null
+      };
+    });
+
+    // Merge FIELD + LAB parameters
+    const allParameters = [...fieldParamsWithStatus, ...labParamsWithStatus];
+
+    // Calculate overall status
+    const overallStatus = calculateOverallStatus(allParameters);
+
+    // Update sample
+    sample.parameters = allParameters;
+    sample.overallStatus = overallStatus;
+    sample.testInfo.labTested = true;
+    sample.testInfo.labTestedBy = req.user._id;
+    sample.testInfo.labTestedAt = now;
 
     await sample.save();
 
@@ -163,35 +265,41 @@ const submitLabTest = async (req, res, next) => {
       sampleRef: sample._id,
       details: {
         labParametersCount: parameters.length,
-        totalParametersCount: labResult.parameters.length,
-        overallStatus: labResult.overallStatus,
-        statusSummary: StatusEngine.getStatusSummary(labResult.parameters)
+        totalParametersCount: allParameters.length,
+        overallStatus: overallStatus
       },
       ipAddress: req.ip
     });
 
     const populatedSample = await Sample.findById(sample._id)
       .populate('collectedBy', 'name email')
-      .populate('fieldTestedBy', 'name email')
-      .populate('labTestedBy', 'name email');
+      .populate('testInfo.labTestedBy', 'name email');
 
     res.json(ApiResponse.success(populatedSample, 'Lab test submitted successfully. Ready for publishing.'));
   } catch (error) {
-    // Handle validation errors from StatusEngine
-    if (error.validationErrors) {
-      return res.status(400).json(
-        ApiResponse.error('Validation failed', 400, error.validationErrors)
-      );
-    }
     next(error);
   }
 };
 
 /**
- * Publish sample - LAB_TESTED → PUBLISHED
+ * Calculate overall status from parameters
+ */
+function calculateOverallStatus(parameters) {
+  if (!parameters || parameters.length === 0) return null;
+
+  const affectingParams = parameters.filter(p => p.affectsOverall !== false && p.status);
+
+  if (affectingParams.length === 0) return 'ACCEPTABLE';
+
+  if (affectingParams.some(p => p.status === 'NOT_ACCEPTABLE')) return 'NOT_ACCEPTABLE';
+  if (affectingParams.some(p => p.status === 'PERMISSIBLE')) return 'PERMISSIBLE';
+
+  return 'ACCEPTABLE';
+}
+
+/**
+ * Publish sample
  * PATCH /api/samples/:id/publish
- *
- * Publishing allowed even if overallStatus = NOT_ACCEPTABLE
  */
 const publishSample = async (req, res, next) => {
   try {
@@ -209,18 +317,23 @@ const publishSample = async (req, res, next) => {
       );
     }
 
-    // Must be LAB_TESTED to publish
-    if (sample.lifecycleStatus !== 'LAB_TESTED') {
+    // Must have LAB test completed
+    if (!sample.testInfo.labTested) {
       return res.status(400).json(
-        ApiResponse.error(`Sample must be in LAB_TESTED status. Current status: ${sample.lifecycleStatus}`, 400)
+        ApiResponse.error('Sample must have LAB test completed before publishing', 400)
+      );
+    }
+
+    if (sample.testInfo.published) {
+      return res.status(400).json(
+        ApiResponse.error('Sample is already published', 400)
       );
     }
 
     const now = new Date();
 
-    sample.lifecycleStatus = 'PUBLISHED';
-    sample.publishedBy = req.user._id;
-    sample.publishedAt = now;
+    sample.testInfo.published = true;
+    sample.testInfo.publishedAt = now;
 
     await sample.save();
 
@@ -238,9 +351,7 @@ const publishSample = async (req, res, next) => {
 
     const populatedSample = await Sample.findById(sample._id)
       .populate('collectedBy', 'name email')
-      .populate('fieldTestedBy', 'name email')
-      .populate('labTestedBy', 'name email')
-      .populate('publishedBy', 'name email');
+      .populate('testInfo.labTestedBy', 'name email');
 
     res.json(ApiResponse.success(populatedSample, 'Sample published successfully'));
   } catch (error) {
@@ -249,7 +360,7 @@ const publishSample = async (req, res, next) => {
 };
 
 /**
- * Archive sample (soft delete) - PUBLISHED → ARCHIVED
+ * Archive sample (soft delete)
  * PATCH /api/samples/:id/archive
  */
 const archiveSample = async (req, res, next) => {
@@ -268,15 +379,14 @@ const archiveSample = async (req, res, next) => {
       );
     }
 
-    // Only PUBLISHED samples can be archived
-    if (sample.lifecycleStatus !== 'PUBLISHED') {
+    // Only published samples can be archived
+    if (!sample.testInfo.published) {
       return res.status(400).json(
-        ApiResponse.error(`Sample must be in PUBLISHED status to archive. Current status: ${sample.lifecycleStatus}`, 400)
+        ApiResponse.error('Sample must be published before archiving', 400)
       );
     }
 
-    const previousStatus = sample.lifecycleStatus;
-    sample.archive();
+    sample.isDeleted = true;
     await sample.save();
 
     // Log action
@@ -284,7 +394,7 @@ const archiveSample = async (req, res, next) => {
       action: 'SAMPLE_ARCHIVED',
       performedBy: req.user._id,
       sampleRef: sample._id,
-      details: { previousStatus },
+      details: {},
       ipAddress: req.ip
     });
 
@@ -295,7 +405,7 @@ const archiveSample = async (req, res, next) => {
 };
 
 /**
- * Restore archived sample - ARCHIVED → PUBLISHED
+ * Restore archived sample
  * PATCH /api/samples/:id/restore
  */
 const restoreSample = async (req, res, next) => {
@@ -314,7 +424,7 @@ const restoreSample = async (req, res, next) => {
       );
     }
 
-    sample.restore();
+    sample.isDeleted = false;
     await sample.save();
 
     // Log action
@@ -322,25 +432,11 @@ const restoreSample = async (req, res, next) => {
       action: 'SAMPLE_RESTORED',
       performedBy: req.user._id,
       sampleRef: sample._id,
-      details: { restoredTo: sample.lifecycleStatus },
+      details: {},
       ipAddress: req.ip
     });
 
     res.json(ApiResponse.success(sample, 'Sample restored successfully'));
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Get LAB parameters for admin form
- * GET /api/parameters?type=LAB
- */
-const getLabParameters = async (req, res, next) => {
-  try {
-    const parameters = await StatusEngine.getLabParameters();
-
-    res.json(ApiResponse.success(parameters, 'LAB parameters retrieved successfully'));
   } catch (error) {
     next(error);
   }
@@ -354,10 +450,20 @@ const getStats = async (req, res, next) => {
   try {
     const baseQuery = { isDeleted: false };
 
-    const [lifecycleStats, overallStats, monthlyTrend, archivedCount] = await Promise.all([
+    const [testStats, overallStats, monthlyTrend, archivedCount] = await Promise.all([
+      // Count by test status
       Sample.aggregate([
         { $match: baseQuery },
-        { $group: { _id: '$lifecycleStatus', count: { $sum: 1 } } }
+        {
+          $group: {
+            _id: {
+              fieldTested: '$testInfo.fieldTested',
+              labTested: '$testInfo.labTested',
+              published: '$testInfo.published'
+            },
+            count: { $sum: 1 }
+          }
+        }
       ]),
       Sample.aggregate([
         { $match: { ...baseQuery, overallStatus: { $ne: null } } },
@@ -382,14 +488,28 @@ const getStats = async (req, res, next) => {
 
     const total = await Sample.countDocuments(baseQuery);
 
+    // Calculate counts based on testInfo
+    let fieldTestedOnly = 0;
+    let labTested = 0;
+    let published = 0;
+
+    testStats.forEach(stat => {
+      if (stat._id.published) {
+        published += stat.count;
+      } else if (stat._id.labTested) {
+        labTested += stat.count;
+      } else if (stat._id.fieldTested) {
+        fieldTestedOnly += stat.count;
+      }
+    });
+
     const stats = {
       total,
       archived: archivedCount,
-      byLifecycle: {
-        COLLECTED: 0,
-        FIELD_TESTED: 0,
-        LAB_TESTED: 0,
-        PUBLISHED: 0
+      byStatus: {
+        fieldTestedOnly,
+        labTested,
+        published
       },
       byOverallStatus: {
         ACCEPTABLE: 0,
@@ -402,12 +522,6 @@ const getStats = async (req, res, next) => {
         count: m.count
       }))
     };
-
-    lifecycleStats.forEach(stat => {
-      if (stats.byLifecycle[stat._id] !== undefined) {
-        stats.byLifecycle[stat._id] = stat.count;
-      }
-    });
 
     overallStats.forEach(stat => {
       if (stats.byOverallStatus[stat._id] !== undefined) {
@@ -428,6 +542,5 @@ module.exports = {
   publishSample,
   archiveSample,
   restoreSample,
-  getLabParameters,
   getStats
 };

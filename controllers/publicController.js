@@ -5,7 +5,7 @@ const getPublicSamples = async (req, res, next) => {
   try {
     const { page = 1, limit = 10, overallStatus, fromDate, toDate, search } = req.query;
 
-    const query = { lifecycleStatus: 'PUBLISHED', isDeleted: false };
+    const query = { 'testInfo.published': true, isDeleted: false };
 
     if (overallStatus) {
       query.overallStatus = overallStatus;
@@ -25,7 +25,7 @@ const getPublicSamples = async (req, res, next) => {
 
     const [samples, total] = await Promise.all([
       Sample.find(query)
-        .select('sampleId address location parameters overallStatus images collectedAt publishedAt standardVersion')
+        .select('sampleId address location parameters overallStatus images collectedAt testInfo standardVersion')
         .sort({ collectedAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
@@ -49,10 +49,10 @@ const getPublicSampleById = async (req, res, next) => {
   try {
     const sample = await Sample.findOne({
       _id: req.params.id,
-      lifecycleStatus: 'PUBLISHED',
+      'testInfo.published': true,
       isDeleted: false
     })
-      .select('sampleId address location parameters overallStatus images collectedAt analysedAt publishedAt standardVersion');
+      .select('sampleId address location parameters overallStatus images collectedAt testInfo standardVersion');
 
     if (!sample) {
       return res.status(404).json(
@@ -69,9 +69,9 @@ const getPublicSampleById = async (req, res, next) => {
 const getPublicStats = async (req, res, next) => {
   try {
     const [totalPublished, statusStats] = await Promise.all([
-      Sample.countDocuments({ lifecycleStatus: 'PUBLISHED' }),
+      Sample.countDocuments({ 'testInfo.published': true, isDeleted: false }),
       Sample.aggregate([
-        { $match: { lifecycleStatus: 'PUBLISHED' } },
+        { $match: { 'testInfo.published': true, isDeleted: false } },
         { $group: { _id: '$overallStatus', count: { $sum: 1 } } }
       ])
     ]);
@@ -99,7 +99,7 @@ const getPublicStats = async (req, res, next) => {
 
 const getMapData = async (req, res, next) => {
   try {
-    const samples = await Sample.find({ lifecycleStatus: 'PUBLISHED' })
+    const samples = await Sample.find({ 'testInfo.published': true, isDeleted: false })
       .select('sampleId address location overallStatus')
       .lean();
 
