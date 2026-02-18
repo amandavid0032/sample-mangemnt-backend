@@ -69,7 +69,9 @@ const createParameter = async (req, res, next) => {
       type,
       acceptableLimit,
       permissibleLimit,
-      enumValues,
+      physicalLimit,
+      enumEvaluation,
+      affectsOverall,
       testMethod
     } = req.body;
 
@@ -100,21 +102,34 @@ const createParameter = async (req, res, next) => {
     if (type === 'RANGE' || type === 'MAX') {
       if (acceptableLimit) {
         parameterData.acceptableLimit = {
-          min: acceptableLimit.min || null,
-          max: acceptableLimit.max || null
+          min: acceptableLimit.min ?? null,
+          max: acceptableLimit.max ?? null
         };
       }
       if (permissibleLimit) {
         parameterData.permissibleLimit = {
-          min: permissibleLimit.min || null,
-          max: permissibleLimit.max || null
+          min: permissibleLimit.min ?? null,
+          max: permissibleLimit.max ?? null
+        };
+      }
+      if (physicalLimit) {
+        parameterData.physicalLimit = {
+          min: physicalLimit.min ?? null,
+          max: physicalLimit.max ?? null
         };
       }
     }
 
-    // Set enum values for ENUM type
-    if (type === 'ENUM' && enumValues) {
-      parameterData.enumValues = Array.isArray(enumValues) ? enumValues : [enumValues];
+    // Set enumEvaluation for ENUM type
+    if (type === 'ENUM' && enumEvaluation) {
+      parameterData.enumEvaluation = enumEvaluation;
+    }
+
+    // Set affectsOverall (default true, TEXT types should be false)
+    if (affectsOverall !== undefined) {
+      parameterData.affectsOverall = affectsOverall;
+    } else if (type === 'TEXT') {
+      parameterData.affectsOverall = false;
     }
 
     // Set test method
@@ -160,21 +175,29 @@ const updateParameter = async (req, res, next) => {
     }
     if (updates.acceptableLimit !== undefined) {
       parameter.acceptableLimit = {
-        min: updates.acceptableLimit?.min || null,
-        max: updates.acceptableLimit?.max || null
+        min: updates.acceptableLimit?.min ?? null,
+        max: updates.acceptableLimit?.max ?? null
       };
     }
     if (updates.permissibleLimit !== undefined) {
       parameter.permissibleLimit = {
-        min: updates.permissibleLimit?.min || null,
-        max: updates.permissibleLimit?.max || null
+        min: updates.permissibleLimit?.min ?? null,
+        max: updates.permissibleLimit?.max ?? null
       };
     }
-    if (updates.enumValues !== undefined) {
-      parameter.enumValues = Array.isArray(updates.enumValues) ? updates.enumValues : [updates.enumValues];
+    if (updates.physicalLimit !== undefined) {
+      parameter.physicalLimit = {
+        min: updates.physicalLimit?.min ?? null,
+        max: updates.physicalLimit?.max ?? null
+      };
+    }
+    if (updates.enumEvaluation !== undefined) {
+      parameter.enumEvaluation = updates.enumEvaluation;
+    }
+    if (updates.affectsOverall !== undefined) {
+      parameter.affectsOverall = updates.affectsOverall;
     }
     if (updates.testMethod !== undefined) {
-      // Ensure testMethod is a string
       parameter.testMethod = typeof updates.testMethod === 'string' ? updates.testMethod : '';
     }
     if (updates.isActive !== undefined) {

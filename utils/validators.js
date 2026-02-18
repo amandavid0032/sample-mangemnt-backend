@@ -27,40 +27,51 @@ const authValidators = {
     body('role')
       .notEmpty().withMessage('Role is required')
       .isIn(userRoles).withMessage(`Role must be one of: ${userRoles.join(', ')}`)
+  ],
+  updateProfile: [
+    body('name')
+      .optional()
+      .trim()
+      .isLength({ min: 2, max: 100 }).withMessage('Name must be 2-100 characters'),
+    body('email')
+      .optional()
+      .trim()
+      .isEmail().withMessage('Invalid email format')
+      .normalizeEmail(),
+    body('password')
+      .optional()
+      .isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
   ]
 };
 
 const sampleValidators = {
+  // Mobile create - multipart/form-data with required image
+  // Single endpoint: without parameters = COLLECTED, with parameters = FIELD_TESTED
   create: [
+    body('title')
+      .trim()
+      .notEmpty().withMessage('Sample title is required')
+      .isLength({ max: 200 }).withMessage('Title cannot exceed 200 characters'),
     body('address')
       .trim()
       .notEmpty().withMessage('Address is required')
       .isLength({ max: 500 }).withMessage('Address cannot exceed 500 characters'),
-    body('location.latitude')
-      .notEmpty().withMessage('Latitude is required')
-      .isFloat({ min: -90, max: 90 }).withMessage('Latitude must be between -90 and 90'),
-    body('location.longitude')
-      .notEmpty().withMessage('Longitude is required')
-      .isFloat({ min: -180, max: 180 }).withMessage('Longitude must be between -180 and 180'),
+    // Location can come as JSON string or object
+    body('location')
+      .notEmpty().withMessage('Location is required'),
     body('collectedAt')
       .optional()
       .isISO8601().withMessage('collectedAt must be a valid date'),
-    // Optional parameters - if provided, sample auto-publishes with results
-    body('parameters')
+    // Selected parameters to test (array of parameter IDs)
+    body('selectedParameters')
       .optional()
-      .isArray().withMessage('Parameters must be an array'),
-    body('parameters.*.parameterRef')
-      .optional()
-      .isMongoId().withMessage('Invalid parameter reference'),
-    body('parameters.*.value')
-      .optional()
-      .notEmpty().withMessage('Parameter value is required')
   ],
-  analyse: [
+  // LAB test - FIELD_TESTED → LAB_TESTED (Admin only)
+  labTest: [
     param('id')
       .isMongoId().withMessage('Invalid sample ID'),
     body('parameters')
-      .isArray({ min: 1 }).withMessage('At least one parameter is required'),
+      .isArray({ min: 1 }).withMessage('At least one LAB parameter is required'),
     body('parameters.*.parameterRef')
       .notEmpty().withMessage('Parameter reference is required')
       .isMongoId().withMessage('Invalid parameter reference'),
@@ -109,6 +120,11 @@ const parameterValidators = {
       .notEmpty().withMessage('Type is required')
       .toUpperCase()
       .isIn(['RANGE', 'MAX', 'ENUM', 'TEXT']).withMessage('Type must be one of: RANGE, MAX, ENUM, TEXT'),
+    // NEW: testLocation - FIELD or LAB
+    body('testLocation')
+      .notEmpty().withMessage('Test location is required')
+      .toUpperCase()
+      .isIn(['FIELD', 'LAB']).withMessage('testLocation must be FIELD or LAB'),
     body('acceptableLimit')
       .optional(),
     body('acceptableLimit.min')
@@ -125,9 +141,13 @@ const parameterValidators = {
     body('permissibleLimit.max')
       .optional({ nullable: true })
       .custom(isNullableNumber).withMessage('permissibleLimit.max must be a number or null'),
-    body('enumValues')
+    // enumEvaluation for ENUM types: { "value": "STATUS" }
+    body('enumEvaluation')
       .optional()
-      .isArray().withMessage('enumValues must be an array'),
+      .isObject().withMessage('enumEvaluation must be an object'),
+    body('affectsOverall')
+      .optional()
+      .isBoolean().withMessage('affectsOverall must be a boolean'),
     body('testMethod')
       .optional()
       .trim()

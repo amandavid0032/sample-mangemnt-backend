@@ -1,67 +1,24 @@
+/**
+ * Sample Routes (Admin)
+ * API endpoints for admin sample management
+ *
+ * NEW WORKFLOW: FIELD + LAB Hybrid Testing
+ * - Lab test → FIELD_TESTED → LAB_TESTED (Admin)
+ * - Publish → LAB_TESTED → PUBLISHED (Admin)
+ * - Archive → PUBLISHED → ARCHIVED (Admin)
+ * - Restore → ARCHIVED → PUBLISHED (Admin)
+ *
+ * Lifecycle: COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
+ */
+
 const express = require('express');
 const router = express.Router();
-const { sampleController } = require('../controllers');
+const sampleController = require('../controllers/sampleController');
 const { protect, authorize, validate } = require('../middleware');
 const { sampleValidators, paginationValidators } = require('../utils/validators');
-const { sampleUpload } = require('../services/uploadService');
-
-// Debug route - check database counts (temporary)
-router.get('/debug', async (req, res) => {
-  try {
-    const Sample = require('../models').Sample;
-    const ParameterMaster = require('../models').ParameterMaster;
-    const User = require('../models').User;
-
-    const [
-      totalSamples,
-      testingCount,
-      publishedCount,
-      archivedCount,
-      parameterCount,
-      userCount
-    ] = await Promise.all([
-      Sample.countDocuments({ isDeleted: false }),
-      Sample.countDocuments({ lifecycleStatus: 'TESTING', isDeleted: false }),
-      Sample.countDocuments({ lifecycleStatus: 'PUBLISHED', isDeleted: false }),
-      Sample.countDocuments({ isDeleted: true }),
-      ParameterMaster.countDocuments(),
-      User.countDocuments()
-    ]);
-
-    // Get sample details
-    const samples = await Sample.find({}).select('sampleId lifecycleStatus overallStatus address isDeleted').limit(20);
-
-    res.json({
-      success: true,
-      debug: {
-        users: userCount,
-        parameters: parameterCount,
-        samples: {
-          total: totalSamples,
-          TESTING: testingCount,
-          PUBLISHED: publishedCount,
-          ARCHIVED: archivedCount
-        },
-        sampleList: samples
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Stats route (Admin only)
 router.get('/stats', protect, authorize('ADMIN'), sampleController.getStats);
-
-// Create sample (Team Member or Admin) - starts in TESTING status
-router.post(
-  '/',
-  protect,
-  authorize('TEAM_MEMBER', 'ADMIN'),
-  sampleUpload,
-  validate(sampleValidators.create),
-  sampleController.createSample
-);
 
 // Get all samples
 router.get(
@@ -79,16 +36,25 @@ router.get(
   sampleController.getSampleById
 );
 
-// Submit analysis - AUTO-CALCULATES and AUTO-PUBLISHES (Team Member or Admin)
+// Submit LAB test - FIELD_TESTED → LAB_TESTED (Admin only)
 router.post(
-  '/:id/submit',
+  '/:id/lab-test',
   protect,
-  authorize('TEAM_MEMBER', 'ADMIN'),
-  validate(sampleValidators.analyse),
-  sampleController.submitSample
+  authorize('ADMIN'),
+  validate(sampleValidators.labTest),
+  sampleController.submitLabTest
 );
 
-// Archive sample - soft delete (Admin only)
+// Publish sample - LAB_TESTED → PUBLISHED (Admin only)
+router.patch(
+  '/:id/publish',
+  protect,
+  authorize('ADMIN'),
+  validate(sampleValidators.getById),
+  sampleController.publishSample
+);
+
+// Archive sample - PUBLISHED → ARCHIVED (Admin only)
 router.patch(
   '/:id/archive',
   protect,
@@ -97,7 +63,7 @@ router.patch(
   sampleController.archiveSample
 );
 
-// Restore archived sample (Admin only)
+// Restore archived sample - ARCHIVED → PUBLISHED (Admin only)
 router.patch(
   '/:id/restore',
   protect,

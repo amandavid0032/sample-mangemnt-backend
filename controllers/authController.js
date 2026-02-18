@@ -72,7 +72,79 @@ const getMe = async (req, res, next) => {
   }
 };
 
+/**
+ * Update user profile
+ * PUT /api/auth/profile
+ * Only allows updating: name, email, password
+ */
+const updateProfile = async (req, res, next) => {
+  try {
+    const { name, email, password } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json(
+        ApiResponse.error('User not found', 404)
+      );
+    }
+
+    // Update only provided fields
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (password) user.password = password;
+
+    await user.save();
+
+    // Log action
+    await AuditLog.logAction({
+      action: 'PROFILE_UPDATED',
+      performedBy: user._id,
+      details: {
+        updatedFields: Object.keys(req.body).filter(k => k !== 'password')
+      },
+      ipAddress: req.ip
+    });
+
+    res.json(
+      ApiResponse.success({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }, 'Profile updated successfully')
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Logout user
+ * POST /api/auth/logout
+ * For JWT, logout is handled client-side by removing token
+ * This endpoint logs the action for audit purposes
+ */
+const logout = async (req, res, next) => {
+  try {
+    // Log action
+    await AuditLog.logAction({
+      action: 'USER_LOGOUT',
+      performedBy: req.user._id,
+      details: { email: req.user.email },
+      ipAddress: req.ip
+    });
+
+    res.json(
+      ApiResponse.success(null, 'Logged out successfully')
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
-  getMe
+  getMe,
+  updateProfile,
+  logout
 };

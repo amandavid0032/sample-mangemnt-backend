@@ -1,36 +1,218 @@
+/**
+ * Mobile Controller
+ * Handles mobile app API endpoints for field team members
+ *
+ * SINGLE API DESIGN:
+ * POST /mobile/samples - One endpoint for sample creation + field test
+ *   - Without parameters: Creates sample in COLLECTED status
+ *   - With parameters: Creates sample + runs field test → FIELD_TESTED
+ *
+ * Lifecycle: COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
+ */
+
 const { Sample, AuditLog, ParameterMaster } = require('../models');
 const StatusEngine = require('../services/statusEngine');
 const ApiResponse = require('../utils/ApiResponse');
+const { processUploadedFiles } = require('../services/uploadService');
 
-// Get samples for mobile user
-// - CREATED samples: visible to ALL team members (anyone can accept)
-// - ACCEPTED/ANALYSED samples: visible ONLY to the user who accepted them
+/**
+ * Create new sample with optional field test values
+ * POST /api/mobile/samples
+ *
+ * REQUIRED: multipart/form-data with sampleImage
+ * - title: Sample title (required)
+ * - address: Location address (required)
+ * - location: JSON string with latitude/longitude (required)
+ * - collectedAt: Collection date (optional)
+ * - selectedParameters: JSON array of parameter IDs to test (required)
+ * - sampleImage: Water sample photo (required)
+ * - locationImage: Location/site photo (optional)
+ * - parameters: JSON array of {parameterRef, value} - OPTIONAL
+ *               If provided, sample goes to FIELD_TESTED immediately
+ *               If not provided, sample stays in COLLECTED (test later)
+ */
+const createSample = async (req, res, next) => {
+  try {
+    const { title, address, location, collectedAt, selectedParameters, parameters } = req.body;
+
+    // REQUIRED: Sample image must be uploaded
+    if (!req.files || !req.files.sampleImage) {
+      return res.status(400).json(
+        ApiResponse.error('Sample image (sampleImage) is required', 400)
+      );
+    }
+
+    // Parse location data if string (multipart form sends as string)
+    const locationData = typeof location === 'string' ? JSON.parse(location) : location;
+
+    // Validate location coordinates
+    if (!locationData || !locationData.latitude || !locationData.longitude) {
+      return res.status(400).json(
+        ApiResponse.error('Location with latitude and longitude is required', 400)
+      );
+    }
+
+    // Parse selectedParameters if string (REQUIRED)
+    let parsedSelectedParameters = [];
+    if (selectedParameters) {
+      parsedSelectedParameters = typeof selectedParameters === 'string'
+        ? JSON.parse(selectedParameters)
+        : selectedParameters;
+    }
+
+    if (parsedSelectedParameters.length === 0) {
+      return res.status(400).json(
+        ApiResponse.error('selectedParameters is required - specify which parameters to test', 400)
+      );
+    }
+
+    // Parse parameters (test values) if provided
+    let parsedParameters = null;
+    if (parameters) {
+      parsedParameters = typeof parameters === 'string'
+        ? JSON.parse(parameters)
+        : parameters;
+    }
+
+    const now = new Date();
+    const sampleData = {
+      title,
+      address,
+      location: {
+        type: 'Point',
+        coordinates: [parseFloat(locationData.longitude), parseFloat(locationData.latitude)]
+      },
+      collectedBy: req.user._id,
+      collectedAt: collectedAt || now,
+      lifecycleStatus: 'COLLECTED',
+      selectedParameters: parsedSelectedParameters
+    };
+
+    // Process uploaded images
+    const imageUrls = processUploadedFiles(req.files);
+    sampleData.images = imageUrls;
+
+    // Create sample first
+    const sample = await Sample.create(sampleData);
+
+    let message = 'Sample created successfully';
+    let actionLogged = 'SAMPLE_CREATED';
+
+    // If parameters (values) provided, process field test immediately
+    if (parsedParameters && parsedParameters.length > 0) {
+      // Get selected parameters for validation
+      const selectedParamDocs = await ParameterMaster.find({
+        _id: { $in: parsedSelectedParameters },
+        testLocation: 'FIELD',
+        isActive: true
+      });
+
+      // Validate submitted parameters match selectedParameters
+      const selectedFieldIds = selectedParamDocs.map(p => p._id.toString());
+      const submittedIds = parsedParameters.map(p => p.parameterRef);
+
+      // Check all selected FIELD parameters are submitted
+      const missingParams = selectedFieldIds.filter(id => !submittedIds.includes(id));
+      if (missingParams.length > 0) {
+        const missingNames = selectedParamDocs
+          .filter(p => missingParams.includes(p._id.toString()))
+          .map(p => p.name);
+        // Delete the created sample since validation failed
+        await Sample.findByIdAndDelete(sample._id);
+        return res.status(400).json(
+          ApiResponse.error(`Missing required parameters: ${missingNames.join(', ')}`, 400)
+        );
+      }
+
+      // Check no extra parameters
+      const extraParams = submittedIds.filter(id => !selectedFieldIds.includes(id));
+      if (extraParams.length > 0) {
+        await Sample.findByIdAndDelete(sample._id);
+        return res.status(400).json(
+          ApiResponse.error('Extra parameters submitted that were not selected', 400)
+        );
+      }
+
+      // Process field test
+      try {
+        const fieldResult = await StatusEngine.processFieldTest(parsedParameters, selectedParamDocs);
+
+        // Update sample with field test results
+        sample.parameters = fieldResult.parameters;
+        sample.lifecycleStatus = 'FIELD_TESTED';
+        sample.fieldTestedBy = req.user._id;
+        sample.fieldTestedAt = now;
+        await sample.save();
+
+        message = 'Sample created and field test submitted successfully';
+        actionLogged = 'SAMPLE_CREATED_WITH_FIELD_TEST';
+      } catch (fieldError) {
+        // Delete sample if field test processing fails
+        await Sample.findByIdAndDelete(sample._id);
+        if (fieldError.validationErrors) {
+          return res.status(400).json(
+            ApiResponse.error('Field test validation failed', 400, fieldError.validationErrors)
+          );
+        }
+        throw fieldError;
+      }
+    }
+
+    // Log action
+    await AuditLog.logAction({
+      action: actionLogged,
+      performedBy: req.user._id,
+      sampleRef: sample._id,
+      details: {
+        sampleId: sample.sampleId,
+        title,
+        address,
+        selectedParametersCount: parsedSelectedParameters.length,
+        hasFieldTestValues: !!parsedParameters,
+        lifecycleStatus: sample.lifecycleStatus
+      },
+      ipAddress: req.ip
+    });
+
+    // Populate and return
+    const populatedSample = await Sample.findById(sample._id)
+      .populate('collectedBy', 'name email')
+      .populate('fieldTestedBy', 'name email')
+      .populate('selectedParameters', 'code name unit type testLocation');
+
+    res.status(201).json(
+      ApiResponse.success(populatedSample, message, 201)
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get samples for mobile user
+ * GET /api/mobile/samples
+ * Returns COLLECTED samples that need field testing
+ */
 const getMobileSamples = async (req, res, next) => {
   try {
     const { page = 1, limit = 10, lifecycleStatus } = req.query;
 
-    let query = { isDeleted: false };
+    const query = { isDeleted: false };
 
-    if (lifecycleStatus === 'CREATED') {
-      // All CREATED samples - available to all team members
-      query.lifecycleStatus = 'CREATED';
-    } else if (lifecycleStatus) {
-      // Specific status (ACCEPTED, ANALYSED) - only show samples accepted by this user
+    // Filter by lifecycle status if provided
+    if (lifecycleStatus) {
       query.lifecycleStatus = lifecycleStatus;
-      query.acceptedBy = req.user._id;
     } else {
-      // No filter - show CREATED (all) + samples accepted by this user
-      query.$or = [
-        { lifecycleStatus: 'CREATED' },
-        { acceptedBy: req.user._id }
-      ];
+      // Default: show COLLECTED samples (need field testing)
+      query.lifecycleStatus = 'COLLECTED';
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [samples, total] = await Promise.all([
       Sample.find(query)
-        .populate('acceptedBy', 'name')
+        .populate('collectedBy', 'name email')
+        .populate('fieldTestedBy', 'name email')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
@@ -50,29 +232,23 @@ const getMobileSamples = async (req, res, next) => {
   }
 };
 
-// Get single sample by ID for mobile
-// - CREATED: any team member can view
-// - ACCEPTED/ANALYSED: only the user who accepted can view
+/**
+ * Get single sample by ID for mobile
+ * GET /api/mobile/samples/:id
+ */
 const getMobileSampleById = async (req, res, next) => {
   try {
     const sample = await Sample.findOne({
       _id: req.params.id,
       isDeleted: false
-    });
+    })
+      .populate('collectedBy', 'name email')
+      .populate('fieldTestedBy', 'name email');
 
     if (!sample) {
       return res.status(404).json(
         ApiResponse.error('Sample not found', 404)
       );
-    }
-
-    // If sample is not CREATED, check if current user accepted it
-    if (sample.lifecycleStatus !== 'CREATED') {
-      if (!sample.acceptedBy || sample.acceptedBy.toString() !== req.user._id.toString()) {
-        return res.status(403).json(
-          ApiResponse.error('You are not authorized to view this sample', 403)
-        );
-      }
     }
 
     res.json(ApiResponse.success(sample, 'Sample retrieved successfully'));
@@ -81,124 +257,23 @@ const getMobileSampleById = async (req, res, next) => {
   }
 };
 
-// Accept sample (mobile)
-// - Any team member can accept a CREATED sample
-// - Once accepted, sample is locked to that user
-const acceptMobileSample = async (req, res, next) => {
+/**
+ * Get FIELD parameters for mobile form
+ * GET /api/mobile/parameters
+ */
+const getFieldParameters = async (req, res, next) => {
   try {
-    const sample = await Sample.findById(req.params.id);
+    const parameters = await StatusEngine.getFieldParameters();
 
-    if (!sample) {
-      return res.status(404).json(
-        ApiResponse.error('Sample not found', 404)
-      );
-    }
-
-    if (sample.isDeleted) {
-      return res.status(400).json(
-        ApiResponse.error('Cannot accept deleted sample', 400)
-      );
-    }
-
-    if (sample.lifecycleStatus !== 'CREATED') {
-      return res.status(400).json(
-        ApiResponse.error(`Cannot accept sample. Current status: ${sample.lifecycleStatus}. Sample may already be accepted by another team member.`, 400)
-      );
-    }
-
-    // Accept the sample - lock it to this user
-    sample.lifecycleStatus = 'ACCEPTED';
-    sample.acceptedBy = req.user._id;
-    sample.acceptedAt = new Date();
-    await sample.save();
-
-    // Log action
-    await AuditLog.logAction({
-      action: 'SAMPLE_ACCEPTED',
-      performedBy: req.user._id,
-      sampleRef: sample._id,
-      details: { previousStatus: 'CREATED', newStatus: 'ACCEPTED' },
-      ipAddress: req.ip
-    });
-
-    res.json(ApiResponse.success(sample, 'Sample accepted successfully. You can now fill in the parameters.'));
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Submit sample with parameters (mobile) - transitions to ANALYSED
-// - Only the user who accepted the sample can submit
-const submitMobileSample = async (req, res, next) => {
-  try {
-    const { parameters } = req.body;
-    const sample = await Sample.findById(req.params.id);
-
-    if (!sample) {
-      return res.status(404).json(
-        ApiResponse.error('Sample not found', 404)
-      );
-    }
-
-    // Check if this user accepted the sample
-    if (!sample.acceptedBy || sample.acceptedBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json(
-        ApiResponse.error('You are not authorized to submit this sample. Only the user who accepted can submit.', 403)
-      );
-    }
-
-    if (sample.lifecycleStatus !== 'ACCEPTED') {
-      return res.status(400).json(
-        ApiResponse.error('Sample must be ACCEPTED before submitting parameters', 400)
-      );
-    }
-
-    // Calculate statuses using engine - creates immutable snapshots
-    const analysisResult = await StatusEngine.processSampleAnalysis(parameters);
-
-    sample.parameters = analysisResult.parameters;
-    sample.overallStatus = analysisResult.overallStatus;
-    sample.lifecycleStatus = 'ANALYSED';
-    sample.analysedBy = req.user._id;
-    sample.analysedAt = new Date();
-
-    await sample.save();
-
-    // Log action
-    await AuditLog.logAction({
-      action: 'SAMPLE_ANALYSED',
-      performedBy: req.user._id,
-      sampleRef: sample._id,
-      details: {
-        parametersCount: parameters.length,
-        overallStatus: analysisResult.overallStatus
-      },
-      ipAddress: req.ip
-    });
-
-    res.json(ApiResponse.success(sample, 'Sample analysed successfully. Waiting for admin review.'));
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Get all parameters for mobile form
-const getParameters = async (req, res, next) => {
-  try {
-    const parameters = await ParameterMaster.find({ isActive: true })
-      .select('code name unit type acceptableLimit permissibleLimit enumValues testMethod')
-      .sort({ code: 1 });
-
-    res.json(ApiResponse.success(parameters, 'Parameters retrieved successfully'));
+    res.json(ApiResponse.success(parameters, 'FIELD parameters retrieved successfully'));
   } catch (error) {
     next(error);
   }
 };
 
 module.exports = {
+  createSample,
   getMobileSamples,
   getMobileSampleById,
-  acceptMobileSample,
-  submitMobileSample,
-  getParameters
+  getFieldParameters
 };

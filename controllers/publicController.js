@@ -5,7 +5,7 @@ const getPublicSamples = async (req, res, next) => {
   try {
     const { page = 1, limit = 10, overallStatus, fromDate, toDate, search } = req.query;
 
-    const query = { lifecycleStatus: 'PUBLISHED' };
+    const query = { lifecycleStatus: 'PUBLISHED', isDeleted: false };
 
     if (overallStatus) {
       query.overallStatus = overallStatus;
@@ -49,7 +49,8 @@ const getPublicSampleById = async (req, res, next) => {
   try {
     const sample = await Sample.findOne({
       _id: req.params.id,
-      lifecycleStatus: 'PUBLISHED'
+      lifecycleStatus: 'PUBLISHED',
+      isDeleted: false
     })
       .select('sampleId address location parameters overallStatus images collectedAt analysedAt publishedAt standardVersion');
 

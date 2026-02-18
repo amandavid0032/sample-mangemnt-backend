@@ -2,150 +2,209 @@
  * Seed Parameters and Users for Water Quality System
  * Based on IS 10500:2012 Indian Standard for Drinking Water
  *
- * USER ROLES:
- * - ADMIN: Full system access
- * - TEAM_MEMBER: Field collection + Lab analysis
+ * NEW WORKFLOW: FIELD + LAB Hybrid Testing
  *
- * SIMPLIFIED WORKFLOW:
- * TESTING → PUBLISHED → ARCHIVED
+ * USER ROLES:
+ * - ADMIN: Lab testing + Publish + Archive
+ * - TEAM_MEMBER: Field collection + Field testing
+ *
+ * LIFECYCLE:
+ * COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
+ *
+ * TEST LOCATIONS:
+ * - FIELD: pH, Temperature, Apparent Colour, Odour, Turbidity (5 params)
+ * - LAB: TDS, True Colour, Aluminum, Ammonia, Chloride, Free Chlorine, Hardness (7 params)
  */
 
 const { ParameterMaster, User, Sample } = require('../models');
 
-// IS 10500:2012 Parameters (12 parameters as per documentation)
+// IS 10500:2012 Parameters (12 parameters)
+// Split into FIELD and LAB testLocation
 const parameters = [
-  // 1. Temperature - TEXT (free text)
+  // ========== FIELD PARAMETERS (5) ==========
+  // Tested on-site by TEAM_MEMBER
+
+  // 1. Temperature - TEXT (informational only, doesn't affect overall status)
   {
     code: 'TEMPERATURE',
     name: 'Temperature',
-    unit: '-',
+    unit: '°C',
     type: 'TEXT',
+    testLocation: 'FIELD',
     acceptableLimit: { min: null, max: null },
     permissibleLimit: { min: null, max: null },
-    testMethod: '-',
+    physicalLimit: { min: -50, max: 100 },
+    affectsOverall: false,
+    testMethod: 'IS 3025 (Part 9)',
     isActive: true
   },
-  // 2. pH - RANGE (6.5 to 8.5)
+  // 2. pH - RANGE (6.5 to 8.5), physical: 0-14
   {
     code: 'PH',
     name: 'pH',
     unit: '-',
     type: 'RANGE',
+    testLocation: 'FIELD',
     acceptableLimit: { min: 6.5, max: 8.5 },
-    permissibleLimit: { min: 6.5, max: 8.5 },
-    testMethod: 'IS 3025 Part 11',
+    permissibleLimit: { min: 6.0, max: 9.0 },
+    physicalLimit: { min: 0, max: 14 },
+    affectsOverall: true,
+    testMethod: 'IS 3025 (Part 11)',
     isActive: true
   },
-  // 3. Apparent Colour - ENUM (dropdown)
+  // 3. Apparent Colour - ENUM with status mapping
   {
     code: 'APPARENT_COLOUR',
     name: 'Apparent Colour',
     unit: '-',
     type: 'ENUM',
-    enumValues: ['Clear', 'Yellowish', 'Brownish', 'Blackish'],
+    testLocation: 'FIELD',
+    enumEvaluation: {
+      'Clear': 'ACCEPTABLE',
+      'Yellowish': 'PERMISSIBLE',
+      'Brownish': 'NOT_ACCEPTABLE',
+      'Blackish': 'NOT_ACCEPTABLE'
+    },
     acceptableLimit: { min: null, max: null },
     permissibleLimit: { min: null, max: null },
-    testMethod: '-',
+    physicalLimit: { min: null, max: null },
+    affectsOverall: true,
+    testMethod: 'Visual',
     isActive: true
   },
-  // 4. True Colour - MAX (5 Hazen)
-  {
-    code: 'TRUE_COLOUR',
-    name: 'True Colour',
-    unit: 'Hazen',
-    type: 'MAX',
-    acceptableLimit: { min: null, max: 5 },
-    permissibleLimit: { min: null, max: 15 },
-    testMethod: 'IS 3025 (Part 4)',
-    isActive: true
-  },
-  // 5. Odour - ENUM (dropdown)
+  // 4. Odour - ENUM with status mapping
   {
     code: 'ODOUR',
     name: 'Odour',
     unit: '-',
     type: 'ENUM',
-    enumValues: ['Unobjectionable', 'Earthy', 'Sewer smell'],
+    testLocation: 'FIELD',
+    enumEvaluation: {
+      'Unobjectionable': 'ACCEPTABLE',
+      'Earthy': 'PERMISSIBLE',
+      'Sewer smell': 'NOT_ACCEPTABLE'
+    },
     acceptableLimit: { min: null, max: null },
     permissibleLimit: { min: null, max: null },
+    physicalLimit: { min: null, max: null },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 5)',
     isActive: true
   },
-  // 6. Turbidity - MAX (1 NTU)
+  // 5. Turbidity - MAX (1 NTU), physical: 0+
   {
     code: 'TURBIDITY',
     name: 'Turbidity',
     unit: 'NTU',
     type: 'MAX',
+    testLocation: 'FIELD',
     acceptableLimit: { min: null, max: 1 },
     permissibleLimit: { min: null, max: 5 },
+    physicalLimit: { min: 0, max: 10000 },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 10)',
     isActive: true
   },
-  // 7. Total Dissolved Solids - MAX (500 mg/L)
+
+  // ========== LAB PARAMETERS (7) ==========
+  // Tested in laboratory by ADMIN
+
+  // 6. True Colour - MAX (5 Hazen), physical: 0+
+  {
+    code: 'TRUE_COLOUR',
+    name: 'True Colour',
+    unit: 'Hazen',
+    type: 'MAX',
+    testLocation: 'LAB',
+    acceptableLimit: { min: null, max: 5 },
+    permissibleLimit: { min: null, max: 15 },
+    physicalLimit: { min: 0, max: 1000 },
+    affectsOverall: true,
+    testMethod: 'IS 3025 (Part 4)',
+    isActive: true
+  },
+  // 7. Total Dissolved Solids - MAX (500 mg/L), physical: 0+
   {
     code: 'TDS',
     name: 'Total Dissolved Solids',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 500 },
     permissibleLimit: { min: null, max: 2000 },
+    physicalLimit: { min: 0, max: 100000 },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 16)',
     isActive: true
   },
-  // 8. Aluminum - MAX (0.03 mg/L)
+  // 8. Aluminum - MAX (0.03 mg/L), physical: 0+
   {
     code: 'ALUMINUM',
     name: 'Aluminum (as Al)',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 0.03 },
     permissibleLimit: { min: null, max: 0.2 },
+    physicalLimit: { min: 0, max: 1000 },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 55)',
     isActive: true
   },
-  // 9. Ammonia - MAX (0.5 mg/L)
+  // 9. Ammonia - MAX (0.5 mg/L), physical: 0+
   {
     code: 'AMMONIA',
     name: 'Ammonia (as Total Ammonia-N)',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 0.5 },
     permissibleLimit: { min: null, max: 0.5 },
+    physicalLimit: { min: 0, max: 1000 },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 34)',
     isActive: true
   },
-  // 10. Chloride - MAX (250 mg/L)
+  // 10. Chloride - MAX (250 mg/L), physical: 0+
   {
     code: 'CHLORIDE',
     name: 'Chloride (as Cl)',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 250 },
     permissibleLimit: { min: null, max: 1000 },
+    physicalLimit: { min: 0, max: 100000 },
+    affectsOverall: true,
     testMethod: 'IS 3025 (Part 32)',
     isActive: true
   },
-  // 11. Free Residual Chlorine - MAX (0.2 mg/L)
+  // 11. Free Residual Chlorine - MAX (0.2 mg/L), physical: 0+
   {
     code: 'FREE_CHLORINE',
     name: 'Free Residual Chlorine',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 0.2 },
     permissibleLimit: { min: null, max: 1.0 },
-    testMethod: 'IS 3024 (Part 26)',
+    physicalLimit: { min: 0, max: 100 },
+    affectsOverall: true,
+    testMethod: 'IS 3025 (Part 26)',
     isActive: true
   },
-  // 12. Total Hardness - MAX (200 mg/L)
+  // 12. Total Hardness - MAX (200 mg/L), physical: 0+
   {
     code: 'HARDNESS',
     name: 'Total Hardness (as CaCO3)',
     unit: 'mg/L',
     type: 'MAX',
+    testLocation: 'LAB',
     acceptableLimit: { min: null, max: 200 },
     permissibleLimit: { min: null, max: 600 },
-    testMethod: 'IS 3024 (Part 21)',
+    physicalLimit: { min: 0, max: 100000 },
+    affectsOverall: true,
+    testMethod: 'IS 3025 (Part 21)',
     isActive: true
   }
 ];
@@ -157,10 +216,12 @@ const seedParameters = async () => {
       const exists = await ParameterMaster.findOne({ code: param.code });
       if (!exists) {
         await ParameterMaster.create(param);
-        console.log(`  Created parameter: ${param.code}`);
+        console.log(`  Created parameter: ${param.code} (${param.testLocation})`);
       }
     }
-    console.log(`Parameters seeded: ${parameters.length} parameters`);
+    const fieldParams = parameters.filter(p => p.testLocation === 'FIELD').length;
+    const labParams = parameters.filter(p => p.testLocation === 'LAB').length;
+    console.log(`Parameters seeded: ${fieldParams} FIELD + ${labParams} LAB = ${parameters.length} total`);
   } catch (error) {
     console.error('Error seeding parameters:', error.message);
   }
@@ -204,7 +265,7 @@ const seedTeamMember = async () => {
   }
 };
 
-// Seed Sample Data for Testing (simplified workflow)
+// Seed Sample Data for Testing (NEW lifecycle workflow)
 const seedSampleData = async () => {
   try {
     const existingSamples = await Sample.countDocuments();
@@ -221,8 +282,10 @@ const seedSampleData = async () => {
       return;
     }
 
-    const allParams = await ParameterMaster.find({ isActive: true });
-    if (allParams.length === 0) {
+    const fieldParams = await ParameterMaster.find({ testLocation: 'FIELD', isActive: true });
+    const labParams = await ParameterMaster.find({ testLocation: 'LAB', isActive: true });
+
+    if (fieldParams.length === 0 || labParams.length === 0) {
       console.log('  Parameters not found, skipping sample seeding');
       return;
     }
@@ -244,7 +307,8 @@ const seedSampleData = async () => {
     const samples = [];
     const now = new Date();
 
-    // Create samples: 5 TESTING, 5 PUBLISHED
+    // Create samples with NEW lifecycle:
+    // 2 COLLECTED, 2 FIELD_TESTED, 3 LAB_TESTED, 3 PUBLISHED
     for (let i = 0; i < 10; i++) {
       const loc = locations[i];
       const daysAgo = 10 - i;
@@ -261,19 +325,44 @@ const seedSampleData = async () => {
         standardVersion: 'IS10500-2012'
       };
 
-      if (i < 5) {
-        // TESTING status (5 samples) - waiting for lab values
-        sample.lifecycleStatus = 'TESTING';
+      if (i < 2) {
+        // COLLECTED status (2 samples) - waiting for field test
+        sample.lifecycleStatus = 'COLLECTED';
+      } else if (i < 4) {
+        // FIELD_TESTED status (2 samples) - field test done, waiting for lab test
+        sample.lifecycleStatus = 'FIELD_TESTED';
+        sample.fieldTestedBy = teamMember._id;
+        sample.fieldTestedAt = new Date(collectedAt.getTime() + 2 * 60 * 60 * 1000); // 2 hours later
+        sample.parameters = generateFieldParameters(fieldParams, i);
+        // No overallStatus yet
+      } else if (i < 7) {
+        // LAB_TESTED status (3 samples) - all tests done, waiting for publish
+        sample.lifecycleStatus = 'LAB_TESTED';
+        sample.fieldTestedBy = teamMember._id;
+        sample.fieldTestedAt = new Date(collectedAt.getTime() + 2 * 60 * 60 * 1000);
+        sample.labTestedBy = admin._id;
+        sample.labTestedAt = new Date(collectedAt.getTime() + 24 * 60 * 60 * 1000);
+        const allParams = [
+          ...generateFieldParameters(fieldParams, i),
+          ...generateLabParameters(labParams, i)
+        ];
+        sample.parameters = allParams;
+        sample.overallStatus = calculateOverallStatus(allParams);
       } else {
-        // PUBLISHED status (5 samples) - already submitted and auto-published
+        // PUBLISHED status (3 samples) - fully published
         sample.lifecycleStatus = 'PUBLISHED';
-        sample.submittedBy = teamMember._id;
-        sample.submittedAt = new Date(collectedAt.getTime() + 24 * 60 * 60 * 1000);
-        sample.publishedAt = sample.submittedAt; // Auto-publish at same time
-
-        // Add test parameters with values
-        sample.parameters = generateTestParameters(allParams, i);
-        sample.overallStatus = calculateOverallStatus(sample.parameters);
+        sample.fieldTestedBy = teamMember._id;
+        sample.fieldTestedAt = new Date(collectedAt.getTime() + 2 * 60 * 60 * 1000);
+        sample.labTestedBy = admin._id;
+        sample.labTestedAt = new Date(collectedAt.getTime() + 24 * 60 * 60 * 1000);
+        sample.publishedBy = admin._id;
+        sample.publishedAt = new Date(collectedAt.getTime() + 48 * 60 * 60 * 1000);
+        const allParams = [
+          ...generateFieldParameters(fieldParams, i),
+          ...generateLabParameters(labParams, i)
+        ];
+        sample.parameters = allParams;
+        sample.overallStatus = calculateOverallStatus(allParams);
       }
 
       samples.push(sample);
@@ -281,38 +370,38 @@ const seedSampleData = async () => {
 
     await Sample.insertMany(samples);
     console.log(`  Created ${samples.length} samples:`);
-    console.log('    - 5 TESTING (waiting for lab values)');
-    console.log('    - 5 PUBLISHED (submitted and auto-published)');
+    console.log('    - 2 COLLECTED (waiting for field test)');
+    console.log('    - 2 FIELD_TESTED (waiting for lab test)');
+    console.log('    - 3 LAB_TESTED (waiting for publish)');
+    console.log('    - 3 PUBLISHED (fully published)');
   } catch (error) {
     console.error('Error seeding samples:', error.message);
   }
 };
 
-// Generate test parameters with realistic values
-function generateTestParameters(allParams, sampleIndex) {
+// Generate FIELD parameters with realistic values
+function generateFieldParameters(fieldParams, sampleIndex) {
   const params = [];
 
-  for (const param of allParams) {
+  for (const param of fieldParams) {
     let value;
     let status;
 
     if (param.type === 'TEXT') {
-      // Temperature - free text
-      value = `${20 + Math.floor(Math.random() * 15)}°C`;
+      value = `${20 + Math.floor(Math.random() * 15)}`;
       status = 'ACCEPTABLE';
     } else if (param.type === 'RANGE') {
-      // pH: Generate value in range
       const min = param.acceptableLimit.min || 0;
       const max = param.acceptableLimit.max || 14;
 
       if (sampleIndex % 3 === 0) {
-        value = min + (max - min) * 0.5; // Middle - ACCEPTABLE
+        value = min + (max - min) * 0.5;
         status = 'ACCEPTABLE';
       } else if (sampleIndex % 3 === 1) {
-        value = max + 0.5; // Above max - NOT_ACCEPTABLE
+        value = max + 0.5;
         status = 'NOT_ACCEPTABLE';
       } else {
-        value = min + (max - min) * 0.3; // Lower middle - ACCEPTABLE
+        value = min + (max - min) * 0.3;
         status = 'ACCEPTABLE';
       }
       value = Math.round(value * 10) / 10;
@@ -321,21 +410,36 @@ function generateTestParameters(allParams, sampleIndex) {
       const permMax = param.permissibleLimit.max || accMax * 2;
 
       if (sampleIndex % 3 === 0) {
-        value = accMax * 0.5; // Below acceptable - ACCEPTABLE
+        value = accMax * 0.5;
         status = 'ACCEPTABLE';
       } else if (sampleIndex % 3 === 1) {
-        value = accMax * 1.5; // Between acceptable and permissible - PERMISSIBLE
+        value = accMax * 1.5;
         status = permMax > accMax ? 'PERMISSIBLE' : 'NOT_ACCEPTABLE';
       } else {
-        value = accMax * 0.8; // Just below acceptable - ACCEPTABLE
+        value = accMax * 0.8;
         status = 'ACCEPTABLE';
       }
       value = Math.round(value * 100) / 100;
     } else if (param.type === 'ENUM') {
-      // For ENUM, select first value (acceptable one)
-      value = param.enumValues[0];
-      status = 'ACCEPTABLE';
+      // param.enumEvaluation is a Mongoose Map - convert to plain object
+      const enumObj = param.enumEvaluation instanceof Map
+        ? Object.fromEntries(param.enumEvaluation)
+        : (param.enumEvaluation || {});
+      const enumKeys = Object.keys(enumObj);
+      if (enumKeys.length > 0) {
+        const keyIndex = sampleIndex % enumKeys.length;
+        value = enumKeys[keyIndex];
+        status = enumObj[value] || 'ACCEPTABLE';
+      } else {
+        value = 'Unknown';
+        status = 'NOT_ACCEPTABLE';
+      }
     }
+
+    // Convert Map to plain object for snapshot
+    const enumEvalObj = param.enumEvaluation instanceof Map
+      ? Object.fromEntries(param.enumEvaluation)
+      : (param.enumEvaluation || {});
 
     params.push({
       parameterRef: param._id,
@@ -343,10 +447,57 @@ function generateTestParameters(allParams, sampleIndex) {
       name: param.name,
       unit: param.unit,
       type: param.type,
+      testLocation: 'FIELD',
       acceptableLimit: param.acceptableLimit,
       permissibleLimit: param.permissibleLimit,
-      enumValues: param.enumValues || [],
+      physicalLimit: param.physicalLimit || { min: null, max: null },
+      enumEvaluation: enumEvalObj,
       testMethod: param.testMethod,
+      affectsOverall: param.affectsOverall !== false,
+      value: value,
+      status: status
+    });
+  }
+
+  return params;
+}
+
+// Generate LAB parameters with realistic values
+function generateLabParameters(labParams, sampleIndex) {
+  const params = [];
+
+  for (const param of labParams) {
+    let value;
+    let status;
+
+    const accMax = param.acceptableLimit.max || 100;
+    const permMax = param.permissibleLimit.max || accMax * 2;
+
+    if (sampleIndex % 3 === 0) {
+      value = accMax * 0.5;
+      status = 'ACCEPTABLE';
+    } else if (sampleIndex % 3 === 1) {
+      value = accMax * 1.5;
+      status = permMax > accMax ? 'PERMISSIBLE' : 'NOT_ACCEPTABLE';
+    } else {
+      value = accMax * 0.8;
+      status = 'ACCEPTABLE';
+    }
+    value = Math.round(value * 100) / 100;
+
+    params.push({
+      parameterRef: param._id,
+      code: param.code,
+      name: param.name,
+      unit: param.unit,
+      type: param.type,
+      testLocation: 'LAB',
+      acceptableLimit: param.acceptableLimit,
+      permissibleLimit: param.permissibleLimit,
+      physicalLimit: param.physicalLimit || { min: null, max: null },
+      enumEvaluation: {},
+      testMethod: param.testMethod,
+      affectsOverall: param.affectsOverall !== false,
       value: value,
       status: status
     });
@@ -359,16 +510,20 @@ function generateTestParameters(allParams, sampleIndex) {
 function calculateOverallStatus(parameters) {
   if (!parameters || parameters.length === 0) return null;
 
-  const hasNotAcceptable = parameters.some(p => p.status === 'NOT_ACCEPTABLE');
+  const affectingParams = parameters.filter(p => p.affectsOverall !== false);
+
+  if (affectingParams.length === 0) return 'ACCEPTABLE';
+
+  const hasNotAcceptable = affectingParams.some(p => p.status === 'NOT_ACCEPTABLE');
   if (hasNotAcceptable) return 'NOT_ACCEPTABLE';
 
-  const hasPermissible = parameters.some(p => p.status === 'PERMISSIBLE');
+  const hasPermissible = affectingParams.some(p => p.status === 'PERMISSIBLE');
   if (hasPermissible) return 'PERMISSIBLE';
 
   return 'ACCEPTABLE';
 }
 
-// Reset and Seed All (for npm run seed:reset)
+// Reset and Seed All
 const resetAndSeed = async () => {
   const { AuditLog } = require('../models');
 
@@ -386,7 +541,7 @@ const resetAndSeed = async () => {
     await seedAdmin();
     await seedTeamMember();
 
-    console.log('\n--- Seeding Parameters (12 total) ---');
+    console.log('\n--- Seeding Parameters ---');
     await seedParameters();
 
     console.log('\n--- Seeding Samples ---');
@@ -398,9 +553,16 @@ const resetAndSeed = async () => {
     console.log('\nTest Credentials:');
     console.log('  ADMIN:        admin@waterquality.com / admin123');
     console.log('  TEAM_MEMBER:  team@waterquality.com / team123');
+    console.log('\nParameters:');
+    console.log('  5 FIELD: Temperature, pH, Apparent Colour, Odour, Turbidity');
+    console.log('  7 LAB:   True Colour, TDS, Aluminum, Ammonia, Chloride, Free Chlorine, Hardness');
     console.log('\nSample Distribution:');
-    console.log('  5 TESTING   - waiting for lab values');
-    console.log('  5 PUBLISHED - submitted and auto-published');
+    console.log('  2 COLLECTED     - waiting for field test');
+    console.log('  2 FIELD_TESTED  - waiting for lab test');
+    console.log('  3 LAB_TESTED    - waiting for publish');
+    console.log('  3 PUBLISHED     - fully published');
+    console.log('\nNEW Lifecycle Flow:');
+    console.log('  COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED');
     console.log('');
   } catch (error) {
     console.error('Error in resetAndSeed:', error.message);

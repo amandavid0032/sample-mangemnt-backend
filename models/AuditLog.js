@@ -6,19 +6,23 @@ const auditLogSchema = new mongoose.Schema({
     required: [true, 'Action is required'],
     enum: {
       values: [
+        // Sample lifecycle actions (FIELD + LAB workflow)
         'SAMPLE_CREATED',
-        'SAMPLE_UPDATED',
-        'SAMPLE_STATUS_CHANGED',
-        'SAMPLE_ACCEPTED',
-        'SAMPLE_SUBMITTED',
-        'SAMPLE_ANALYSED',
+        'SAMPLE_CREATED_WITH_FIELD_TEST',
+        'SAMPLE_FIELD_TESTED',
+        'SAMPLE_LAB_TESTED',
         'SAMPLE_PUBLISHED',
         'SAMPLE_ARCHIVED',
         'SAMPLE_RESTORED',
+        // User actions
         'USER_CREATED',
         'USER_UPDATED',
         'USER_STATUS_CHANGED',
+        'USER_DELETED',
         'USER_LOGIN',
+        'USER_LOGOUT',
+        'PROFILE_UPDATED',
+        // Other actions
         'REPORT_GENERATED'
       ],
       message: 'Invalid action type'
