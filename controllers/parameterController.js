@@ -7,12 +7,18 @@ const getAllParameters = async (req, res, next) => {
       includeInactive,
       page = 1,
       limit = 10,
-      all = 'false'
+      all = 'false',
+      testLocation
     } = req.query;
 
     const query = {};
     if (!includeInactive || includeInactive !== 'true') {
       query.isActive = true;
+    }
+
+    // Filter by testLocation (FIELD or LAB)
+    if (testLocation) {
+      query.testLocation = testLocation.toUpperCase();
     }
 
     // If all=true, return all parameters without pagination (for dropdowns, etc.)
@@ -202,6 +208,10 @@ const updateParameter = async (req, res, next) => {
     }
     if (updates.isActive !== undefined) {
       parameter.isActive = updates.isActive;
+    }
+    // Allow updating testLocation (FIELD or LAB)
+    if (updates.testLocation !== undefined) {
+      parameter.testLocation = updates.testLocation.toUpperCase();
     }
 
     await parameter.save();

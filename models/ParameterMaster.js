@@ -39,14 +39,14 @@ const parameterMasterSchema = new mongoose.Schema({
     required: [true, 'Parameter type is required'],
     uppercase: true
   },
-  // NEW: Where this parameter is tested - FIELD (on-site) or LAB (laboratory)
+  // Where this parameter is tested - FIELD (on-site) or LAB (laboratory)
   testLocation: {
     type: String,
     enum: {
       values: testLocations,
       message: 'testLocation must be FIELD or LAB'
     },
-    required: [true, 'Test location is required'],
+    default: 'LAB',
     uppercase: true
   },
   // For RANGE and MAX types - acceptable limit range

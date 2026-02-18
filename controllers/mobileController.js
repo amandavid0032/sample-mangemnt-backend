@@ -2,43 +2,49 @@
  * Mobile Controller
  * Handles mobile app API endpoints for field team members
  *
- * SINGLE API DESIGN:
- * POST /mobile/samples - One endpoint for sample creation + field test
- *   - Without parameters: Creates sample in COLLECTED status
- *   - With parameters: Creates sample + runs field test → FIELD_TESTED
- *
- * Lifecycle: COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
+ * NEW DESIGN:
+ * - FIELD test: Just stores {parameterRef, value} - NO status calculation
+ * - Status calculation happens ONLY when admin submits LAB test
+ * - Uses testInfo nested object for tracking test status
  */
 
 const { Sample, AuditLog, ParameterMaster } = require('../models');
-const StatusEngine = require('../services/statusEngine');
 const ApiResponse = require('../utils/ApiResponse');
 const { processUploadedFiles } = require('../services/uploadService');
 
 /**
- * Create new sample with optional field test values
+ * Create new sample with field test values
  * POST /api/mobile/samples
  *
- * REQUIRED: multipart/form-data with sampleImage
- * - title: Sample title (required)
- * - address: Location address (required)
- * - location: JSON string with latitude/longitude (required)
- * - collectedAt: Collection date (optional)
- * - selectedParameters: JSON array of parameter IDs to test (required)
- * - sampleImage: Water sample photo (required)
- * - locationImage: Location/site photo (optional)
- * - parameters: JSON array of {parameterRef, value} - OPTIONAL
- *               If provided, sample goes to FIELD_TESTED immediately
- *               If not provided, sample stays in COLLECTED (test later)
+ * REQUIRED:
+ * - title: Sample title
+ * - location: JSON {latitude, longitude}
+ * - sampleImage: Water sample photo (file)
+ * - locationImage: Location photo (file)
+ * - parameters: [{id, value}, ...]
+ *
+ * OPTIONAL:
+ * - address: Location address
+ * - collectedAt: Collection date
+ *
+ * RESPONSE:
+ * { sampleId, createdAt, message } or { error }
  */
 const createSample = async (req, res, next) => {
   try {
-    const { title, address, location, collectedAt, selectedParameters, parameters } = req.body;
+    const { title, address, location, collectedAt, parameters } = req.body;
 
     // REQUIRED: Sample image must be uploaded
     if (!req.files || !req.files.sampleImage) {
       return res.status(400).json(
         ApiResponse.error('Sample image (sampleImage) is required', 400)
+      );
+    }
+
+    // REQUIRED: Location image must be uploaded
+    if (!req.files.locationImage) {
+      return res.status(400).json(
+        ApiResponse.error('Location image (locationImage) is required', 400)
       );
     }
 
@@ -52,29 +58,53 @@ const createSample = async (req, res, next) => {
       );
     }
 
-    // Parse selectedParameters if string (REQUIRED)
-    let parsedSelectedParameters = [];
-    if (selectedParameters) {
-      parsedSelectedParameters = typeof selectedParameters === 'string'
-        ? JSON.parse(selectedParameters)
-        : selectedParameters;
-    }
-
-    if (parsedSelectedParameters.length === 0) {
-      return res.status(400).json(
-        ApiResponse.error('selectedParameters is required - specify which parameters to test', 400)
-      );
-    }
-
-    // Parse parameters (test values) if provided
-    let parsedParameters = null;
+    // Parse parameters - REQUIRED (simplified format: {id, value})
+    let parsedParameters = [];
     if (parameters) {
       parsedParameters = typeof parameters === 'string'
         ? JSON.parse(parameters)
         : parameters;
     }
 
+    if (parsedParameters.length === 0) {
+      return res.status(400).json(
+        ApiResponse.error('parameters is required - send [{id, value}, ...]', 400)
+      );
+    }
+
+    // Extract parameter IDs for validation
+    const parameterIds = parsedParameters.map(p => p.id);
+
+    // Validate all submitted parameters are FIELD parameters
+    const paramDocs = await ParameterMaster.find({
+      _id: { $in: parameterIds },
+      testLocation: 'FIELD',
+      isActive: true
+    });
+
+    if (paramDocs.length !== parameterIds.length) {
+      // Some parameters are not FIELD type or don't exist
+      const validIds = paramDocs.map(p => p._id.toString());
+      const invalidIds = parameterIds.filter(id => !validIds.includes(id));
+      return res.status(400).json(
+        ApiResponse.error(`Invalid FIELD parameter IDs: ${invalidIds.join(', ')}`, 400)
+      );
+    }
+
+    // Process uploaded images
+    const imageUrls = processUploadedFiles(req.files);
+
     const now = new Date();
+
+    // Create sample with FIELD test values (NO status calculation)
+    // Just store parameterRef + value
+    const sampleParameters = parsedParameters.map(p => ({
+      parameterRef: p.id,
+      value: p.value,
+      testLocation: 'FIELD',
+      status: null  // Status will be calculated after LAB test
+    }));
+
     const sampleData = {
       title,
       address,
@@ -84,105 +114,45 @@ const createSample = async (req, res, next) => {
       },
       collectedBy: req.user._id,
       collectedAt: collectedAt || now,
-      lifecycleStatus: 'COLLECTED',
-      selectedParameters: parsedSelectedParameters
+      images: imageUrls,
+      testInfo: {
+        fieldTested: true,
+        fieldTestedAt: now,
+        labTested: false,
+        labTestedBy: null,
+        labTestedAt: null,
+        published: false,
+        publishedAt: null
+      },
+      parameters: sampleParameters,
+      overallStatus: null
     };
 
-    // Process uploaded images
-    const imageUrls = processUploadedFiles(req.files);
-    sampleData.images = imageUrls;
-
-    // Create sample first
+    // Create sample
     const sample = await Sample.create(sampleData);
-
-    let message = 'Sample created successfully';
-    let actionLogged = 'SAMPLE_CREATED';
-
-    // If parameters (values) provided, process field test immediately
-    if (parsedParameters && parsedParameters.length > 0) {
-      // Get selected parameters for validation
-      const selectedParamDocs = await ParameterMaster.find({
-        _id: { $in: parsedSelectedParameters },
-        testLocation: 'FIELD',
-        isActive: true
-      });
-
-      // Validate submitted parameters match selectedParameters
-      const selectedFieldIds = selectedParamDocs.map(p => p._id.toString());
-      const submittedIds = parsedParameters.map(p => p.parameterRef);
-
-      // Check all selected FIELD parameters are submitted
-      const missingParams = selectedFieldIds.filter(id => !submittedIds.includes(id));
-      if (missingParams.length > 0) {
-        const missingNames = selectedParamDocs
-          .filter(p => missingParams.includes(p._id.toString()))
-          .map(p => p.name);
-        // Delete the created sample since validation failed
-        await Sample.findByIdAndDelete(sample._id);
-        return res.status(400).json(
-          ApiResponse.error(`Missing required parameters: ${missingNames.join(', ')}`, 400)
-        );
-      }
-
-      // Check no extra parameters
-      const extraParams = submittedIds.filter(id => !selectedFieldIds.includes(id));
-      if (extraParams.length > 0) {
-        await Sample.findByIdAndDelete(sample._id);
-        return res.status(400).json(
-          ApiResponse.error('Extra parameters submitted that were not selected', 400)
-        );
-      }
-
-      // Process field test
-      try {
-        const fieldResult = await StatusEngine.processFieldTest(parsedParameters, selectedParamDocs);
-
-        // Update sample with field test results
-        sample.parameters = fieldResult.parameters;
-        sample.lifecycleStatus = 'FIELD_TESTED';
-        sample.fieldTestedBy = req.user._id;
-        sample.fieldTestedAt = now;
-        await sample.save();
-
-        message = 'Sample created and field test submitted successfully';
-        actionLogged = 'SAMPLE_CREATED_WITH_FIELD_TEST';
-      } catch (fieldError) {
-        // Delete sample if field test processing fails
-        await Sample.findByIdAndDelete(sample._id);
-        if (fieldError.validationErrors) {
-          return res.status(400).json(
-            ApiResponse.error('Field test validation failed', 400, fieldError.validationErrors)
-          );
-        }
-        throw fieldError;
-      }
-    }
 
     // Log action
     await AuditLog.logAction({
-      action: actionLogged,
+      action: 'SAMPLE_CREATED_WITH_FIELD_TEST',
       performedBy: req.user._id,
       sampleRef: sample._id,
       details: {
         sampleId: sample.sampleId,
         title,
-        address,
-        selectedParametersCount: parsedSelectedParameters.length,
-        hasFieldTestValues: !!parsedParameters,
-        lifecycleStatus: sample.lifecycleStatus
+        parametersCount: parsedParameters.length
       },
       ipAddress: req.ip
     });
 
-    // Populate and return
-    const populatedSample = await Sample.findById(sample._id)
-      .populate('collectedBy', 'name email')
-      .populate('fieldTestedBy', 'name email')
-      .populate('selectedParameters', 'code name unit type testLocation');
-
-    res.status(201).json(
-      ApiResponse.success(populatedSample, message, 201)
-    );
+    // SIMPLIFIED RESPONSE - only essential data
+    res.status(201).json({
+      success: true,
+      message: 'Sample created successfully',
+      data: {
+        sampleId: sample.sampleId,
+        createdAt: sample.createdAt
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -191,28 +161,28 @@ const createSample = async (req, res, next) => {
 /**
  * Get samples for mobile user
  * GET /api/mobile/samples
- * Returns COLLECTED samples that need field testing
+ * Query params: page, limit, fieldTested, labTested
  */
 const getMobileSamples = async (req, res, next) => {
   try {
-    const { page = 1, limit = 10, lifecycleStatus } = req.query;
+    const { page = 1, limit = 10, fieldTested, labTested } = req.query;
 
     const query = { isDeleted: false };
 
-    // Filter by lifecycle status if provided
-    if (lifecycleStatus) {
-      query.lifecycleStatus = lifecycleStatus;
-    } else {
-      // Default: show COLLECTED samples (need field testing)
-      query.lifecycleStatus = 'COLLECTED';
+    // Filter by test status
+    if (fieldTested !== undefined) {
+      query['testInfo.fieldTested'] = fieldTested === 'true';
+    }
+    if (labTested !== undefined) {
+      query['testInfo.labTested'] = labTested === 'true';
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [samples, total] = await Promise.all([
       Sample.find(query)
-        .populate('collectedBy', 'name email')
-        .populate('fieldTestedBy', 'name email')
+        .select('sampleId title images collectedAt testInfo overallStatus')
+        .populate('collectedBy', 'name')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
@@ -243,7 +213,7 @@ const getMobileSampleById = async (req, res, next) => {
       isDeleted: false
     })
       .populate('collectedBy', 'name email')
-      .populate('fieldTestedBy', 'name email');
+      .populate('testInfo.labTestedBy', 'name email');
 
     if (!sample) {
       return res.status(404).json(
@@ -263,9 +233,57 @@ const getMobileSampleById = async (req, res, next) => {
  */
 const getFieldParameters = async (req, res, next) => {
   try {
-    const parameters = await StatusEngine.getFieldParameters();
+    const parameters = await ParameterMaster.find({
+      testLocation: 'FIELD',
+      isActive: true
+    }).select('_id code name unit type acceptableLimit permissibleLimit enumEvaluation').sort({ code: 1 });
 
-    res.json(ApiResponse.success(parameters, 'FIELD parameters retrieved successfully'));
+    // Simplify response based on type
+    const simplified = parameters.map(p => {
+      const base = {
+        _id: p._id,
+        code: p.code,
+        name: p.name,
+        unit: p.unit,
+        type: p.type
+      };
+
+      switch (p.type) {
+        case 'ENUM':
+          return {
+            ...base,
+            enumEvaluation: p.enumEvaluation instanceof Map
+              ? Object.fromEntries(p.enumEvaluation)
+              : (p.enumEvaluation || {})
+          };
+
+        case 'MAX':
+          return {
+            ...base,
+            acceptableLimit: p.acceptableLimit?.max,
+            permissibleLimit: p.permissibleLimit?.max
+          };
+
+        case 'RANGE':
+          return {
+            ...base,
+            acceptableRange: {
+              min: p.acceptableLimit?.min,
+              max: p.acceptableLimit?.max
+            },
+            permissibleRange: {
+              min: p.permissibleLimit?.min,
+              max: p.permissibleLimit?.max
+            }
+          };
+
+        case 'TEXT':
+        default:
+          return base;
+      }
+    });
+
+    res.json(ApiResponse.success(simplified, 'FIELD parameters retrieved successfully'));
   } catch (error) {
     next(error);
   }

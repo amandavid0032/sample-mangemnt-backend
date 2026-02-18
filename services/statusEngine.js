@@ -268,22 +268,83 @@ class StatusEngine {
 
   /**
    * Get all FIELD parameters for mobile form
+   * Returns SIMPLIFIED response - only relevant fields per type
    */
   static async getFieldParameters() {
-    return await ParameterMaster.find({
+    const params = await ParameterMaster.find({
       testLocation: 'FIELD',
       isActive: true
     }).sort({ code: 1 });
+
+    // Return simplified response based on type
+    return params.map(p => this._simplifyParameter(p));
   }
 
   /**
    * Get all LAB parameters for admin form
+   * Returns SIMPLIFIED response - only relevant fields per type
    */
   static async getLabParameters() {
-    return await ParameterMaster.find({
+    const params = await ParameterMaster.find({
       testLocation: 'LAB',
       isActive: true
     }).sort({ code: 1 });
+
+    return params.map(p => this._simplifyParameter(p));
+  }
+
+  /**
+   * Simplify parameter response - only return relevant fields per type
+   */
+  static _simplifyParameter(param) {
+    const base = {
+      _id: param._id,
+      code: param.code,
+      name: param.name,
+      unit: param.unit,
+      type: param.type,
+      testLocation: param.testLocation
+    };
+
+    switch (param.type) {
+      case 'ENUM':
+        // For ENUM: only show the options with their status mapping
+        return {
+          ...base,
+          enumEvaluation: param.enumEvaluation instanceof Map
+            ? Object.fromEntries(param.enumEvaluation)
+            : (param.enumEvaluation || {})
+        };
+
+      case 'MAX':
+        // For MAX: show acceptable and permissible limits
+        return {
+          ...base,
+          acceptableLimit: param.acceptableLimit?.max,
+          permissibleLimit: param.permissibleLimit?.max
+        };
+
+      case 'RANGE':
+        // For RANGE: show min-max range
+        return {
+          ...base,
+          acceptableRange: {
+            min: param.acceptableLimit?.min,
+            max: param.acceptableLimit?.max
+          },
+          permissibleRange: {
+            min: param.permissibleLimit?.min,
+            max: param.permissibleLimit?.max
+          }
+        };
+
+      case 'TEXT':
+        // For TEXT: just basic info
+        return base;
+
+      default:
+        return base;
+    }
   }
 
   /**

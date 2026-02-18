@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { lifecycleStatuses, parameterStatuses, standardVersion } = require('../config');
+const { parameterStatuses, standardVersion } = require('../config');
 
 // Limit schema for snapshot
 const limitSchema = new mongoose.Schema({
@@ -7,27 +7,37 @@ const limitSchema = new mongoose.Schema({
   max: { type: Number, default: null }
 }, { _id: false });
 
-// IMMUTABLE PARAMETER SNAPSHOT - stores regulatory limits at time of testing
+// FIELD parameter - just stores value (no status yet)
+const fieldParameterSchema = new mongoose.Schema({
+  parameterRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ParameterMaster',
+    required: true
+  },
+  value: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true
+  }
+}, { _id: false });
+
+// FULL parameter snapshot - with status (after LAB test)
 const parameterSnapshotSchema = new mongoose.Schema({
   parameterRef: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ParameterMaster',
     required: true
   },
-  // SNAPSHOT BLOCK (IMMUTABLE) - captured from ParameterMaster at test time
-  code: { type: String, required: true },
-  name: { type: String, required: true },
-  unit: { type: String, required: true },
+  // SNAPSHOT BLOCK - captured from ParameterMaster at test time
+  code: { type: String },
+  name: { type: String },
+  unit: { type: String },
   type: {
     type: String,
-    enum: ['RANGE', 'MAX', 'ENUM', 'TEXT'],
-    required: true
+    enum: ['RANGE', 'MAX', 'ENUM', 'TEXT']
   },
-  // NEW: Where this parameter was tested
   testLocation: {
     type: String,
-    enum: ['FIELD', 'LAB'],
-    required: true
+    enum: ['FIELD', 'LAB']
   },
   acceptableLimit: { type: limitSchema, default: { min: null, max: null } },
   permissibleLimit: { type: limitSchema, default: { min: null, max: null } },
@@ -47,14 +57,14 @@ const parameterSnapshotSchema = new mongoose.Schema({
     required: true
   },
 
-  // COMPUTED RESULT
+  // COMPUTED RESULT (null until LAB test)
   status: {
     type: String,
     enum: {
-      values: parameterStatuses,
+      values: [...parameterStatuses, null],
       message: 'Status must be one of: ACCEPTABLE, PERMISSIBLE, NOT_ACCEPTABLE'
     },
-    required: true
+    default: null
   }
 }, { _id: false });
 
@@ -77,6 +87,26 @@ const imagesSchema = new mongoose.Schema({
   locationImageUrl: { type: String, default: null }
 }, { _id: false });
 
+// testInfo schema - contains all test status info in one object
+const testInfoSchema = new mongoose.Schema({
+  // FIELD TEST
+  fieldTested: { type: Boolean, default: false },
+  fieldTestedAt: { type: Date, default: null },
+
+  // LAB TEST
+  labTested: { type: Boolean, default: false },
+  labTestedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  labTestedAt: { type: Date, default: null },
+
+  // PUBLISHED
+  published: { type: Boolean, default: false },
+  publishedAt: { type: Date, default: null }
+}, { _id: false });
+
 const sampleSchema = new mongoose.Schema({
   sampleId: {
     type: String
@@ -97,18 +127,12 @@ const sampleSchema = new mongoose.Schema({
   },
   address: {
     type: String,
-    required: [true, 'Address is required'],
     trim: true,
-    maxlength: [500, 'Address cannot exceed 500 characters']
+    maxlength: [500, 'Address cannot exceed 500 characters'],
+    default: null
   },
 
-  // Selected parameters to test (FIELD parameters only for mobile)
-  selectedParameters: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'ParameterMaster'
-  }],
-
-  // Collection info (who created the sample)
+  // Collection info (who created the sample - also did FIELD test)
   collectedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -119,53 +143,24 @@ const sampleSchema = new mongoose.Schema({
     required: [true, 'Collection date is required']
   },
 
-  // Images
+  // Images (both required)
   images: {
     type: imagesSchema,
     default: { sampleImageUrl: null, locationImageUrl: null }
   },
 
-  // NEW Lifecycle: COLLECTED → FIELD_TESTED → LAB_TESTED → PUBLISHED → ARCHIVED
-  lifecycleStatus: {
-    type: String,
-    enum: {
-      values: lifecycleStatuses,
-      message: 'Lifecycle status must be one of: COLLECTED, FIELD_TESTED, LAB_TESTED, PUBLISHED, ARCHIVED'
-    },
-    default: 'COLLECTED'
-  },
-
-  // FIELD TEST - done by TEAM_MEMBER on-site
-  fieldTestedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  fieldTestedAt: {
-    type: Date,
-    default: null
-  },
-
-  // LAB TEST - done by ADMIN in laboratory
-  labTestedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  labTestedAt: {
-    type: Date,
-    default: null
-  },
-
-  // PUBLISHING - done by ADMIN
-  publishedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  publishedAt: {
-    type: Date,
-    default: null
+  // Test info - all test status in one object
+  testInfo: {
+    type: testInfoSchema,
+    default: {
+      fieldTested: false,
+      fieldTestedAt: null,
+      labTested: false,
+      labTestedBy: null,
+      labTestedAt: null,
+      published: false,
+      publishedAt: null
+    }
   },
 
   // Standard version at time of testing
@@ -174,14 +169,16 @@ const sampleSchema = new mongoose.Schema({
     default: standardVersion
   },
 
-  // IMMUTABLE PARAMETER SNAPSHOTS (both FIELD and LAB)
+  // PARAMETER VALUES
+  // During FIELD test: stores {parameterRef, value} only
+  // After LAB test: stores full snapshot with status
   parameters: {
     type: [parameterSnapshotSchema],
     default: []
   },
 
-  // Overall status (calculated after LAB_TESTED)
-  // NULL until all testing complete
+  // Overall status (calculated after LAB test)
+  // NULL until LAB test complete
   overallStatus: {
     type: String,
     enum: {
@@ -203,14 +200,15 @@ const sampleSchema = new mongoose.Schema({
 // Indexes
 sampleSchema.index({ sampleId: 1 }, { unique: true });
 sampleSchema.index({ location: '2dsphere' });
-sampleSchema.index({ lifecycleStatus: 1, createdAt: -1 });
+sampleSchema.index({ 'testInfo.fieldTested': 1, createdAt: -1 });
+sampleSchema.index({ 'testInfo.labTested': 1 });
+sampleSchema.index({ 'testInfo.published': 1 });
 sampleSchema.index({ overallStatus: 1 });
 sampleSchema.index({ 'parameters.code': 1 });
 sampleSchema.index({ 'parameters.testLocation': 1 });
 sampleSchema.index({ isDeleted: 1 });
 sampleSchema.index({ collectedBy: 1 });
-sampleSchema.index({ fieldTestedBy: 1 });
-sampleSchema.index({ labTestedBy: 1 });
+sampleSchema.index({ 'testInfo.labTestedBy': 1 });
 
 // Auto-generate sampleId
 sampleSchema.pre('save', async function(next) {
@@ -225,38 +223,14 @@ sampleSchema.pre('save', async function(next) {
 });
 
 /**
- * NEW Lifecycle Transitions:
- * COLLECTED → FIELD_TESTED (Team member submits field test)
- * FIELD_TESTED → LAB_TESTED (Admin submits lab test)
- * LAB_TESTED → PUBLISHED (Admin publishes)
- * PUBLISHED → ARCHIVED (Admin archives)
- * ARCHIVED → PUBLISHED (Admin restores)
- */
-const VALID_TRANSITIONS = {
-  'COLLECTED': ['FIELD_TESTED'],
-  'FIELD_TESTED': ['LAB_TESTED'],
-  'LAB_TESTED': ['PUBLISHED'],
-  'PUBLISHED': ['ARCHIVED'],
-  'ARCHIVED': ['PUBLISHED']
-};
-
-sampleSchema.statics.isValidTransition = function(currentStatus, newStatus) {
-  return VALID_TRANSITIONS[currentStatus]?.includes(newStatus) || false;
-};
-
-sampleSchema.statics.getValidTransitions = function(currentStatus) {
-  return VALID_TRANSITIONS[currentStatus] || [];
-};
-
-/**
  * Calculate overall status from parameters
- * Only called after LAB_TESTED (all parameters submitted)
+ * Only called after LAB test (all parameters have status)
  */
 sampleSchema.methods.calculateOverallStatus = function() {
   if (this.parameters.length === 0) return null;
 
-  // Filter to only parameters that affect overall status
-  const affectingParams = this.parameters.filter(p => p.affectsOverall !== false);
+  // Filter to only parameters that affect overall status and have status
+  const affectingParams = this.parameters.filter(p => p.affectsOverall !== false && p.status);
 
   if (affectingParams.length === 0) return 'ACCEPTABLE';
 
@@ -286,20 +260,6 @@ sampleSchema.methods.getLabParameters = function() {
   return this.parameters.filter(p => p.testLocation === 'LAB');
 };
 
-/**
- * Check if field testing is complete
- */
-sampleSchema.methods.hasFieldTest = function() {
-  return this.fieldTestedBy !== null && this.fieldTestedAt !== null;
-};
-
-/**
- * Check if lab testing is complete
- */
-sampleSchema.methods.hasLabTest = function() {
-  return this.labTestedBy !== null && this.labTestedAt !== null;
-};
-
 // Get coordinates as lat/lng object
 sampleSchema.methods.getCoordinates = function() {
   if (this.location && this.location.coordinates) {
@@ -309,19 +269,6 @@ sampleSchema.methods.getCoordinates = function() {
     };
   }
   return { latitude: 0, longitude: 0 };
-};
-
-// Archive sample (soft delete + status change)
-sampleSchema.methods.archive = function() {
-  this.isDeleted = true;
-  this.lifecycleStatus = 'ARCHIVED';
-};
-
-// Restore sample from archive
-sampleSchema.methods.restore = function() {
-  this.isDeleted = false;
-  // Restore to PUBLISHED (archived samples were published before)
-  this.lifecycleStatus = 'PUBLISHED';
 };
 
 // Convert enumEvaluation Maps to plain objects for JSON

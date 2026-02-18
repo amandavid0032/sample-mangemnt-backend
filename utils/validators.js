@@ -45,26 +45,21 @@ const authValidators = {
 };
 
 const sampleValidators = {
-  // Mobile create - multipart/form-data with required image
-  // Single endpoint: without parameters = COLLECTED, with parameters = FIELD_TESTED
+  // Mobile create - SIMPLIFIED API
   create: [
     body('title')
       .trim()
       .notEmpty().withMessage('Sample title is required')
       .isLength({ max: 200 }).withMessage('Title cannot exceed 200 characters'),
     body('address')
+      .optional()  // Address is OPTIONAL (we have lat/long)
       .trim()
-      .notEmpty().withMessage('Address is required')
       .isLength({ max: 500 }).withMessage('Address cannot exceed 500 characters'),
-    // Location can come as JSON string or object
     body('location')
       .notEmpty().withMessage('Location is required'),
     body('collectedAt')
       .optional()
-      .isISO8601().withMessage('collectedAt must be a valid date'),
-    // Selected parameters to test (array of parameter IDs)
-    body('selectedParameters')
-      .optional()
+      .isISO8601().withMessage('collectedAt must be a valid date')
   ],
   // LAB test - FIELD_TESTED → LAB_TESTED (Admin only)
   labTest: [
@@ -166,7 +161,11 @@ const parameterValidators = {
     body('type')
       .optional()
       .toUpperCase()
-      .isIn(['RANGE', 'MAX', 'ENUM', 'TEXT']).withMessage('Type must be one of: RANGE, MAX, ENUM, TEXT')
+      .isIn(['RANGE', 'MAX', 'ENUM', 'TEXT']).withMessage('Type must be one of: RANGE, MAX, ENUM, TEXT'),
+    body('testLocation')
+      .optional()
+      .toUpperCase()
+      .isIn(['FIELD', 'LAB']).withMessage('testLocation must be FIELD or LAB')
   ]
 };
 
