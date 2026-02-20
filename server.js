@@ -28,8 +28,8 @@ const initializeDB = async () => {
     await seedTeamMember();
     await seedSampleData();
     isDbInitialized = true;
-  } catch (error) {
-    console.error('DB initialization error:', error.message);
+  } catch {
+    // DB initialization failed, will retry on next request
   }
 };
 

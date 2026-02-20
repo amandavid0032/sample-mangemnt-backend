@@ -1,5 +1,6 @@
 const { Sample } = require('../models');
 const ApiResponse = require('../utils/ApiResponse');
+const { generateSampleReport } = require('../services/reportService');
 
 const getPublicSamples = async (req, res, next) => {
   try {
@@ -120,9 +121,43 @@ const getMapData = async (req, res, next) => {
   }
 };
 
+/**
+ * Download public sample as PDF report
+ * GET /api/public/samples/:id/pdf
+ */
+const downloadPublicPDF = async (req, res, next) => {
+  try {
+    const sample = await Sample.findOne({
+      _id: req.params.id,
+      'testInfo.published': true,
+      isDeleted: false
+    });
+
+    if (!sample) {
+      return res.status(404).json(
+        ApiResponse.error('Sample not found or not published', 404)
+      );
+    }
+
+    // Generate PDF
+    const doc = generateSampleReport(sample);
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${sample.sampleId}-report.pdf"`);
+
+    // Pipe PDF to response
+    doc.pipe(res);
+    doc.end();
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getPublicSamples,
   getPublicSampleById,
   getPublicStats,
-  getMapData
+  getMapData,
+  downloadPublicPDF
 };

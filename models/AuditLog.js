@@ -11,9 +11,11 @@ const auditLogSchema = new mongoose.Schema({
         'SAMPLE_CREATED_WITH_FIELD_TEST',
         'SAMPLE_FIELD_TESTED',
         'SAMPLE_LAB_TESTED',
+        'SAMPLE_LAB_TESTED_AND_PUBLISHED',
         'SAMPLE_PUBLISHED',
         'SAMPLE_ARCHIVED',
         'SAMPLE_RESTORED',
+        'SAMPLE_PDF_DOWNLOADED',
         // User actions
         'USER_CREATED',
         'USER_UPDATED',

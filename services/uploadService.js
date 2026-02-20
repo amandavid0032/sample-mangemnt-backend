@@ -118,8 +118,8 @@ const deleteFile = async (fileUrl) => {
         fs.unlinkSync(filePath);
       }
     }
-  } catch (error) {
-    console.error('Error deleting file:', error);
+  } catch {
+    // Silently fail file deletion
   }
 };
 

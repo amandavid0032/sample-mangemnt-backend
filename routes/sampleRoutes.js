@@ -36,6 +36,14 @@ router.get(
   sampleController.getSampleById
 );
 
+// Download sample as PDF report
+router.get(
+  '/:id/pdf',
+  protect,
+  validate(sampleValidators.getById),
+  sampleController.downloadPDF
+);
+
 // Submit LAB test - FIELD_TESTED → LAB_TESTED (Admin only)
 router.post(
   '/:id/lab-test',

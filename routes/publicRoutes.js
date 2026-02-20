@@ -10,6 +10,9 @@ router.get('/samples', validate(paginationValidators), publicController.getPubli
 // Get single published sample
 router.get('/samples/:id', validate(sampleValidators.getById), publicController.getPublicSampleById);
 
+// Download sample PDF report (public)
+router.get('/samples/:id/pdf', validate(sampleValidators.getById), publicController.downloadPublicPDF);
+
 // Get statistics
 router.get('/stats', publicController.getPublicStats);
 

@@ -21,11 +21,9 @@ const connectDB = async () => {
 
     cached.promise = mongoose.connect(process.env.MONGODB_URI, opts)
       .then((mongoose) => {
-        console.log('MongoDB Connected');
         return mongoose;
       })
       .catch((error) => {
-        console.error(`Database connection error: ${error.message}`);
         cached.promise = null;
         throw error;
       });

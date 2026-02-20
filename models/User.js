@@ -35,11 +35,6 @@ const userSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
-  },
-  refreshToken: {
-    type: String,
-    default: null,
-    select: false
   }
 }, {
   timestamps: true
@@ -67,7 +62,6 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const user = this.toObject();
   delete user.password;
-  delete user.refreshToken;
   return user;
 };
 

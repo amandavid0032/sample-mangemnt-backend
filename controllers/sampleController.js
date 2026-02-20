@@ -9,6 +9,7 @@
 
 const { Sample, AuditLog, ParameterMaster } = require('../models');
 const ApiResponse = require('../utils/ApiResponse');
+const { generateSampleReport } = require('../services/reportService');
 
 /**
  * Get all samples with filtering and pagination
@@ -212,10 +213,9 @@ const submitLabTest = async (req, res, next) => {
         let status = null;
         try {
           status = paramMaster.calculateStatus(fp.value);
-        } catch (err) {
+        } catch {
           // If status calculation fails (e.g., invalid ENUM value), use existing status or ACCEPTABLE
           status = fp.status || 'ACCEPTABLE';
-          console.warn(`Status calculation failed for ${paramMaster.code}: ${err.message}`);
         }
 
         return {
@@ -256,17 +256,22 @@ const submitLabTest = async (req, res, next) => {
     sample.testInfo.labTestedBy = req.user._id;
     sample.testInfo.labTestedAt = now;
 
+    // Auto-publish after LAB test
+    sample.testInfo.published = true;
+    sample.testInfo.publishedAt = now;
+
     await sample.save();
 
     // Log action
     await AuditLog.logAction({
-      action: 'SAMPLE_LAB_TESTED',
+      action: 'SAMPLE_LAB_TESTED_AND_PUBLISHED',
       performedBy: req.user._id,
       sampleRef: sample._id,
       details: {
         labParametersCount: parameters.length,
         totalParametersCount: allParameters.length,
-        overallStatus: overallStatus
+        overallStatus: overallStatus,
+        autoPublished: true
       },
       ipAddress: req.ip
     });
@@ -275,7 +280,7 @@ const submitLabTest = async (req, res, next) => {
       .populate('collectedBy', 'name email')
       .populate('testInfo.labTestedBy', 'name email');
 
-    res.json(ApiResponse.success(populatedSample, 'Lab test submitted successfully. Ready for publishing.'));
+    res.json(ApiResponse.success(populatedSample, 'Lab test submitted and sample published successfully.'));
   } catch (error) {
     next(error);
   }
@@ -450,7 +455,7 @@ const getStats = async (req, res, next) => {
   try {
     const baseQuery = { isDeleted: false };
 
-    const [testStats, overallStats, monthlyTrend, archivedCount] = await Promise.all([
+    const [testStats, overallStats, monthlyTrend, archivedCount, total] = await Promise.all([
       // Count by test status
       Sample.aggregate([
         { $match: baseQuery },
@@ -483,10 +488,9 @@ const getStats = async (req, res, next) => {
         { $sort: { '_id.year': -1, '_id.month': -1 } },
         { $limit: 12 }
       ]),
-      Sample.countDocuments({ isDeleted: true })
+      Sample.countDocuments({ isDeleted: true }),
+      Sample.countDocuments(baseQuery)
     ]);
-
-    const total = await Sample.countDocuments(baseQuery);
 
     // Calculate counts based on testInfo
     let fieldTestedOnly = 0;
@@ -535,6 +539,46 @@ const getStats = async (req, res, next) => {
   }
 };
 
+/**
+ * Download sample as PDF report
+ * GET /api/samples/:id/pdf
+ */
+const downloadPDF = async (req, res, next) => {
+  try {
+    const sample = await Sample.findById(req.params.id)
+      .populate('collectedBy', 'name email')
+      .populate('testInfo.labTestedBy', 'name email');
+
+    if (!sample) {
+      return res.status(404).json(
+        ApiResponse.error('Sample not found', 404)
+      );
+    }
+
+    // Generate PDF
+    const doc = generateSampleReport(sample);
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${sample.sampleId}-report.pdf"`);
+
+    // Pipe PDF to response
+    doc.pipe(res);
+    doc.end();
+
+    // Log action
+    await AuditLog.logAction({
+      action: 'SAMPLE_PDF_DOWNLOADED',
+      performedBy: req.user._id,
+      sampleRef: sample._id,
+      details: { sampleId: sample.sampleId },
+      ipAddress: req.ip
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllSamples,
   getSampleById,
@@ -542,5 +586,6 @@ module.exports = {
   publishSample,
   archiveSample,
   restoreSample,
-  getStats
+  getStats,
+  downloadPDF
 };

@@ -207,8 +207,9 @@ sampleSchema.index({ overallStatus: 1 });
 sampleSchema.index({ 'parameters.code': 1 });
 sampleSchema.index({ 'parameters.testLocation': 1 });
 sampleSchema.index({ isDeleted: 1 });
-sampleSchema.index({ collectedBy: 1 });
 sampleSchema.index({ 'testInfo.labTestedBy': 1 });
+// Compound index for mobile queries (collectedBy + isDeleted + createdAt)
+sampleSchema.index({ collectedBy: 1, isDeleted: 1, createdAt: -1 });
 
 // Auto-generate sampleId
 sampleSchema.pre('save', async function(next) {

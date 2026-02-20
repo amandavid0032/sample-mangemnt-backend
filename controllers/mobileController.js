@@ -270,7 +270,7 @@ const getMobileSamples = async (req, res, next) => {
 
 /**
  * Get sample statistics for current user
- * Helper function for getMobileSamples
+ * Helper function - uses single aggregation query instead of 8 separate queries
  */
 const getMySampleStats = async (userId) => {
   const now = new Date();
@@ -282,22 +282,59 @@ const getMySampleStats = async (userId) => {
   const startOfMonth = new Date(startOfToday);
   startOfMonth.setDate(startOfMonth.getDate() - 30);
 
-  const baseQuery = { collectedBy: userId, isDeleted: false };
-
-  const [today, yesterday, week, month, total, pending, labDone, published] = await Promise.all([
-    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfToday } }),
-    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfYesterday, $lt: startOfToday } }),
-    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfWeek } }),
-    Sample.countDocuments({ ...baseQuery, createdAt: { $gte: startOfMonth } }),
-    Sample.countDocuments(baseQuery),
-    Sample.countDocuments({ ...baseQuery, 'testInfo.fieldTested': true, 'testInfo.labTested': false }),
-    Sample.countDocuments({ ...baseQuery, 'testInfo.labTested': true, 'testInfo.published': false }),
-    Sample.countDocuments({ ...baseQuery, 'testInfo.published': true })
+  // Single aggregation query with $facet to get all stats at once
+  const result = await Sample.aggregate([
+    { $match: { collectedBy: userId, isDeleted: false } },
+    {
+      $facet: {
+        total: [{ $count: 'count' }],
+        today: [
+          { $match: { createdAt: { $gte: startOfToday } } },
+          { $count: 'count' }
+        ],
+        yesterday: [
+          { $match: { createdAt: { $gte: startOfYesterday, $lt: startOfToday } } },
+          { $count: 'count' }
+        ],
+        week: [
+          { $match: { createdAt: { $gte: startOfWeek } } },
+          { $count: 'count' }
+        ],
+        month: [
+          { $match: { createdAt: { $gte: startOfMonth } } },
+          { $count: 'count' }
+        ],
+        pending: [
+          { $match: { 'testInfo.fieldTested': true, 'testInfo.labTested': false } },
+          { $count: 'count' }
+        ],
+        labDone: [
+          { $match: { 'testInfo.labTested': true, 'testInfo.published': false } },
+          { $count: 'count' }
+        ],
+        published: [
+          { $match: { 'testInfo.published': true } },
+          { $count: 'count' }
+        ]
+      }
+    }
   ]);
 
+  const stats = result[0];
+
   return {
-    byPeriod: { today, yesterday, week, month, total },
-    byStatus: { pending, labDone, published }
+    byPeriod: {
+      today: stats.today[0]?.count || 0,
+      yesterday: stats.yesterday[0]?.count || 0,
+      week: stats.week[0]?.count || 0,
+      month: stats.month[0]?.count || 0,
+      total: stats.total[0]?.count || 0
+    },
+    byStatus: {
+      pending: stats.pending[0]?.count || 0,
+      labDone: stats.labDone[0]?.count || 0,
+      published: stats.published[0]?.count || 0
+    }
   };
 };
 
